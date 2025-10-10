@@ -2,7 +2,7 @@
 
 Windows-focused threat hunting utility to rapidly search Windows Event Logs for suspicious activity across key tactics like credential access, persistence, lateral movement, execution/defense evasion, exfiltration/C2, and smoking-gun indicators. It supports filters by time, log type, event level, source, and description, and can display results in JSON, CSV, text, or a compact matrix view. It also includes helpers to check log availability, review and configure retention, and open Event Viewer or the log directory.
 
-Note: In enterprise environments, it is recommended to centralize logs in a SIEM and operate within a SOC workflow for alerting, enrichment, and long-term retention. Use this tool for local triage, spot-checking, validation, and rapid investigation on endpoints.
+**Important Note**: In enterprise environments, it is recommended to centralize logs in a SIEM and operate within a SOC workflow for alerting, enrichment, and long-term retention. Use this tool for local triage, spot-checking, validation, and rapid investigation on endpoints.
 
 ### Key Features
 - Search by curated event IDs grouped into hunting categories
@@ -76,6 +76,14 @@ These JSON files define named categories mapped to lists of Event IDs. You can p
 - `simple_privilege.json`: Concise privilege-escalation-centric set; lighter-weight than the full `privilege_escalation.json` list.
 - `test_events.json`: Large synthetic set for testing and stress validation. Not recommended for routine hunts.
 - `custom_events.json`: Example file showing how to define your own categories (e.g., `my_custom_category`, `high_priority_events`, `powershell_events`). Use this as a starting template.
+
+New curated configs included:
+- `sysmon_core.json`: Core Sysmon events (process create, network, image loads, file create, registry, WMI, drivers, code injection, named pipes, DNS) for environments with Sysmon deployed.
+- `powershell_deep.json`: PowerShell Operational and Script Block Logging focus (4100/4103/4104 plus common operational IDs), useful for script-based attacks.
+- `rdp_remote_access.json`: RDP and remote session telemetry (logon/logoff, session reconnect/disconnect, and TerminalServices events like 1149). Helps trace interactive remote access.
+- `kerberos_anomalies.json`: Kerberos requests and failures that often indicate brute force, service ticket abuse, or misconfigurations (4768/4769/4771/4772/4773/4776, etc.).
+- `persistence_autoruns.json`: Autoruns and service/task creation/modification (registry run keys 12/13/14, tasks 106/140/4698, services 7040/7045, and installer 4697).
+- `network_wfp_anomalies.json`: Windows Filtering Platform allow/deny and related events (5152/5153/5156/5157/5158/5159/5160/5161) to spot suspicious network patterns.
 
 When to use which:
 - Quick incident triage on a workstation: `event_ids.json` or `accessible_events.json`.
@@ -273,6 +281,52 @@ python ThreatHunting.py --config custom_events.json --hours 72 --format text
 python ThreatHunting.py --list-categories
 ```
 
+Config-specific examples:
+
+```bash
+# Sysmon core (if Sysmon deployed)
+python ThreatHunting.py --config sysmon_core.json --hours 24 --format json
+
+# Deep PowerShell hunting
+python ThreatHunting.py --config powershell_deep.json --hours 48 --description-filter "DownloadString"
+
+# RDP/remote access focus
+python ThreatHunting.py --config rdp_remote_access.json --hours 24 --matrix
+
+# Kerberos anomaly hunting
+python ThreatHunting.py --config kerberos_anomalies.json --hours 72 --format text
+
+# Persistence and autoruns sweep
+python ThreatHunting.py --config persistence_autoruns.json --hours 168 --matrix
+
+# Network WFP anomalies
+python ThreatHunting.py --config network_wfp_anomalies.json --hours 24 --format json
+
+# Balanced defaults (used when no --config is provided)
+python ThreatHunting.py --config event_ids.json --hours 24 --matrix
+
+# Accessible set for common logs when access is limited
+python ThreatHunting.py --config accessible_events.json --hours 24 --format text
+
+# Advanced set (includes Sysmon category if deployed)
+python ThreatHunting.py --config advanced_events.json --hours 48 --format json
+
+# Common Application/System context during triage
+python ThreatHunting.py --config common_events.json --hours 72 --matrix
+
+# Focused privilege-escalation deep review (very verbose)
+python ThreatHunting.py --config privilege_escalation.json --hours 168 --format text
+
+# Lightweight privilege-escalation sweep
+python ThreatHunting.py --config simple_privilege.json --hours 48 --matrix
+
+# Large synthetic set for testing/stress validation
+python ThreatHunting.py --config test_events.json --hours 2 --format json
+
+# Your tailored categories (edit custom_events.json first)
+python ThreatHunting.py --config custom_events.json --hours 72 --format text
+```
+
 Admin handling:
 
 ```bash
@@ -332,6 +386,3 @@ python ThreatHunting.py --config custom_events.json --log-filter Application --l
 ## License
 
 See `LICENSE` in this repository.
-
-# ThreatHunting
-Looking for Indicators of Compromise
