@@ -661,6 +661,56 @@ python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc
 
 # Offline EVTX hunting across a directory of files (triage bundle)
 python ThreatHunting.py --hours 168 --evtx C:\\triage\\evtx_dump --all-events --format text --matrix
+
+# Advanced combinations and edge cases
+
+# Multiple configs with preset
+python ThreatHunting.py --hours 24 --preset incident_response --configs config/privilege_escalation.json config/accessible_events.json --format json
+
+# Complex field filtering with boolean logic
+python ThreatHunting.py --hours 48 --all-events --process-filter "powershell\\.exe|cmd\\.exe" --parent-filter "winword\\.exe|excel\\.exe" --bool OR --format text --matrix
+
+# Timeline with sessionization and output to file
+python ThreatHunting.py --hours 72 --all-events --timeline jsonl --sessionize user --format jsonl > user_timeline.jsonl
+
+# High-performance scanning with concurrency and progress
+python ThreatHunting.py --hours 168 --all-events --max-events 10000 --concurrency 4 --progress --format json
+
+# Comprehensive hunting with all features
+python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --ioc ioc/lolbins_iocs.csv --ioc-format csv --allowlist config/allowlist.json --levels-all Information Warning Error --format text --matrix --progress
+
+# Service status check
+python ThreatHunting.py --check-service
+
+# Webhook integration
+python ThreatHunting.py --hours 24 --all-events --webhook https://your-webhook.com/endpoint --format jsonl
+
+# Splunk HEC integration
+python ThreatHunting.py --hours 24 --all-events --hec-url https://your-splunk.com:8088/services/collector --hec-token your-token --format jsonl
+
+# Suppression rules
+python ThreatHunting.py --hours 24 --all-events --suppress "Application/600" --suppress "System/7036" --format text
+
+# Specific event ID hunting
+python ThreatHunting.py --hours 24 --event-ids 4624 4625 4648 4672 --format text --matrix
+
+# Category-based hunting with custom config
+python ThreatHunting.py --hours 24 --categories credential_access,lateral_movement --config config/custom_events.json --format json
+
+# Retention configuration
+python ThreatHunting.py --configure-retention --log Security --size 100MB --days 30
+
+# Log availability check
+python ThreatHunting.py --check-availability
+
+# Auto-elevation
+python ThreatHunting.py --elevate --hours 24 --all-events --format text
+
+# Quiet mode with minimal output
+python ThreatHunting.py --hours 24 --all-events --format json --quiet
+
+# Verbose mode with detailed output
+python ThreatHunting.py --hours 24 --all-events --format text --verbose
 ```
 
 ### Sigma rules examples
@@ -674,6 +724,15 @@ python ThreatHunting.py --hours 24 --event-ids 4688 7045 1102 --sigma-dir sigma/
 
 # Use Sigma alongside allowlist suppression to reduce noise
 python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --allowlist config/allowlist.json --format json
+
+# Sigma rules with field filtering
+python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --process-filter "powershell\\.exe" --format text --matrix
+
+# Sigma rules with timeline output
+python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --timeline jsonl --format jsonl
+
+# Sigma rules with specific categories
+python ThreatHunting.py --hours 24 --categories execution_and_defense_evasion --sigma-dir sigma/windows --format text --matrix
 ```
 
 ### IOC-driven hunting examples
@@ -690,6 +749,15 @@ python ThreatHunting.py --hours 24 --all-events --ioc stix.json --ioc-format sti
 
 # IOC hunt combined with Sigma and allowlist for reduced noise
 python ThreatHunting.py --hours 24 --all-events --ioc iocs.csv --ioc-format csv --sigma-dir sigma/windows --allowlist config/allowlist.json --format text --matrix
+
+# IOC hunting with field filtering
+python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc-format csv --process-filter "powershell\\.exe" --format text --matrix
+
+# IOC hunting with timeline output
+python ThreatHunting.py --hours 24 --all-events --ioc ioc/common_iocs.csv --ioc-format csv --timeline jsonl --format jsonl
+
+# IOC hunting with boost scores
+python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc-format csv --ioc-boost 15 --format text --matrix
 ```
 
 ### Sigma rules (authoring and organization)
