@@ -660,6 +660,8 @@ python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc
 ```
 
 # Offline EVTX hunting across a directory of files (triage bundle)
+
+```bash
 python ThreatHunting.py --hours 168 --evtx C:\\triage\\evtx_dump --all-events --format text --matrix
 
 # Advanced combinations and edge cases
