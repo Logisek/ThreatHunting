@@ -12,6 +12,7 @@ import json
 import sys
 import os
 from contextlib import redirect_stdout
+import ctypes
 
 
 def load_event_ids_from_json(json_file_path):
@@ -1136,6 +1137,10 @@ if __name__ == "__main__":
     parser.add_argument(
         '--description-filter', type=str,
         help='Filter results where description contains the specified string')
+    parser.add_argument('--no-admin-warning', action='store_true',
+                        help='Suppress non-elevated admin warning')
+    parser.add_argument('--elevate', action='store_true',
+                        help='If not elevated, relaunch this script with Administrator privileges')
 
     args = parser.parse_args()
 
@@ -1157,6 +1162,52 @@ if __name__ == "__main__":
     ALL_EVENT_IDS = sorted({eid for cat in EVENTS.values() for eid in cat})
     
     print(f"Loaded {len(ALL_EVENT_IDS)} unique Event IDs from {len(EVENTS)} categories")
+
+    # Warn or elevate if not running with Administrator privileges (UAC-aware)
+    try:
+        is_admin = False
+        try:
+            # This checks the current process token elevation under UAC
+            is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            # Fallback to previous heuristic if shell32 is unavailable
+            try:
+                is_admin = bool(win32security.IsUserAnAdmin())
+            except Exception:
+                is_admin = False
+
+        if not is_admin:
+            if getattr(args, 'elevate', False):
+                # Re-launch the script elevated using ShellExecute 'runas'
+                try:
+                    script_path = os.path.abspath(__file__)
+                    # Rebuild args excluding the --elevate flag to avoid recursion
+                    child_args = [script_path] + [a for a in sys.argv[1:] if a != '--elevate']
+                    params = ' '.join([f'"{a}"' if ' ' in a or a.startswith('-') else a for a in child_args])
+                    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+                    if rc <= 32:
+                        print("Failed to relaunch elevated. Please run this script from an elevated prompt.")
+                        # If elevation failed, still show the warning unless suppressed
+                        if not getattr(args, 'no-admin-warning', False):
+                            print("WARNING: Administrator privileges not detected. This script works best when run elevated.")
+                            print("Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
+                            print("Run from an elevated PowerShell or Command Prompt for full functionality.")
+                    else:
+                        # Successfully initiated elevation; exit current process
+                        sys.exit(0)
+                except Exception:
+                    # On failure, show warning unless suppressed
+                    if not getattr(args, 'no-admin-warning', False):
+                        print("WARNING: Administrator privileges not detected. This script works best when run elevated.")
+                        print("Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
+                        print("Run from an elevated PowerShell or Command Prompt for full functionality.")
+            else:
+                if not getattr(args, 'no-admin-warning', False):
+                    print("WARNING: Administrator privileges not detected. This script works best when run elevated.")
+                    print("Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
+                    print("Run from an elevated PowerShell or Command Prompt for full functionality.")
+    except Exception:
+        pass
 
     if args.list_categories:
         print("Available threat hunting categories:")

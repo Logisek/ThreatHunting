@@ -1,2 +1,337 @@
+## ThreatHunting.py — Windows Event Log Threat Hunting Toolkit
+
+Windows-focused threat hunting utility to rapidly search Windows Event Logs for suspicious activity across key tactics like credential access, persistence, lateral movement, execution/defense evasion, exfiltration/C2, and smoking-gun indicators. It supports filters by time, log type, event level, source, and description, and can display results in JSON, CSV, text, or a compact matrix view. It also includes helpers to check log availability, review and configure retention, and open Event Viewer or the log directory.
+
+Note: In enterprise environments, it is recommended to centralize logs in a SIEM and operate within a SOC workflow for alerting, enrichment, and long-term retention. Use this tool for local triage, spot-checking, validation, and rapid investigation on endpoints.
+
+### Key Features
+- Search by curated event IDs grouped into hunting categories
+- Filter by time window, level, log type, source, and description
+- Output in JSON, CSV, human-readable text, or matrix view
+- Quick checks for log availability coverage and retention settings
+- Configure retention (PowerShell, registry, or direct API)
+- Open Event Viewer and Windows log directories
+- Load custom event sets from JSON
+- UAC-aware admin check, optional auto-elevation, and warning suppression
+
+---
+
+## Installation and Requirements
+
+- Windows 10/11 or Windows Server with Event Logs enabled
+- Python 3.8+
+- Dependencies: `pywin32`
+
+Install dependencies:
+
+```bash
+pip install pywin32
+```
+
+Run from project directory:
+
+```bash
+python ThreatHunting.py -h
+```
+
+Admin privileges are recommended for full functionality (especially the `Security` log and retention configuration). You can auto-elevate or suppress warnings via flags; see below.
+
+---
+
+## Event Categories and Defaults
+
+The tool ships with curated default categories and event IDs. You can also load your own via `--config` with a JSON file following the same structure (see `common_events.json`, `advanced_events.json`, `simple_privilege.json`, `privilege_escalation.json`, `accessible_events.json`, `test_events.json`, `custom_events.json`).
+
+When no `--config` is provided, built-in defaults are used. The tool prints how many unique Event IDs and categories are loaded on start.
+
+List categories without running a search:
+
+```bash
+python ThreatHunting.py --list-categories
+```
+
+### Event JSON Files in This Repository
+
+These JSON files define named categories mapped to lists of Event IDs. You can pass any of them to `--config <file>` to use those categories during a hunt. The schema is:
+
+```json
+{
+  "category_name": [
+    4688,
+    4698,
+    7045
+  ],
+  "another_category": [
+    4624,
+    1102
+  ]
+}
+```
+
+- `event_ids.json`: Balanced, production-ready default categories used by the tool when no config is supplied. Covers credential access, persistence, lateral movement, execution/evasion, exfiltration/C2, smoking-gun indicators, and correlation helpers.
+- `accessible_events.json`: Practical set emphasizing commonly accessible Application/System/Security events for broad hunting when access is limited.
+- `advanced_events.json`: Enriched categories for more advanced scenarios, including a `sysmon_events` set (1–25) if Sysmon is deployed.
+- `common_events.json`: Baseline common Application/System event IDs to understand general system/app stability and context during triage.
+- `privilege_escalation.json`: Very broad Security event catalog focused on privilege escalation and related Security IDs. Useful for exhaustive reviews, can be noisy.
+- `simple_privilege.json`: Concise privilege-escalation-centric set; lighter-weight than the full `privilege_escalation.json` list.
+- `test_events.json`: Large synthetic set for testing and stress validation. Not recommended for routine hunts.
+- `custom_events.json`: Example file showing how to define your own categories (e.g., `my_custom_category`, `high_priority_events`, `powershell_events`). Use this as a starting template.
+
+When to use which:
+- Quick incident triage on a workstation: `event_ids.json` or `accessible_events.json`.
+- Deep-dive security review: `privilege_escalation.json` (expect volume) or `advanced_events.json` (if Sysmon present).
+- Environment-specific hunts: start from `custom_events.json` and tailor categories/events.
+
+---
+
+## Argument Reference
+
+- `--hours <int>`: Time window to search backward from now (default: 24).
+- `--format {json,text,csv}`: Output format (default: text).
+- `--categories <list>`: Limit search to one or more category names.
+- `--list-categories`: List available categories and exit.
+- `--check-availability`: Show how far back each log retains data and summary.
+- `--show-retention`: Print current retention settings for core logs.
+- `--configure-retention <DAYS>`: Configure log retention (admin required).
+  - `--max-size <MB>`: Max log size in MB (default: 1024).
+  - `--retention-policy {overwrite_as_needed,archive_when_full,never_overwrite}`: Retention mode (default: overwrite_as_needed).
+  - `--method {registry,powershell,auto}`: How to configure (default: auto; tries PowerShell then registry, then direct API).
+  - `--force`: Attempt configuration even if admin is not detected (may still fail).
+- `--open-event-viewer`: Launch Event Viewer (`eventvwr.msc`).
+- `--open-log-directory`: Open the Windows Event Log directory in Explorer.
+- `--open-both`: Open both Event Viewer and the log directory.
+- `--config <path>`: Load event IDs/categories from a JSON file.
+- `-o, --output <path>`: Write results to a UTF‑8 file. For matrix view, format is treated as text.
+- `--level {Error,Warning,Information,Critical,Verbose}`: Filter by event level.
+- `--level-all {Error,Warning,Information,Critical,Verbose}`: Return all events of a level (ignores event ID filter).
+- `--matrix`: Tabular, width-limited matrix for quick console triage (text view).
+- `--log-filter {Application,Security,Setup,System}`: Restrict search to a single log.
+- `--source-filter <string>`: Case-insensitive contains-match on event source.
+- `--description-filter <string>`: Case-insensitive contains-match on event description.
+
+Elevation and warnings:
+- `--no-admin-warning`: Suppress the non-elevated warning.
+- `--elevate`: If not elevated, re-launch the process with Administrator privileges via UAC.
+
+---
+
+## Quick-Start Threat Hunting Playbooks
+
+Below are concise playbooks for triaging a potentially compromised Windows workstation (assuming logs are intact). Run the console as Administrator if possible.
+
+### 1) Broad suspicious activity sweep (last 24h)
+
+```bash
+python ThreatHunting.py --hours 24 --format text --matrix
+```
+
+Tips:
+- Scan with `--categories critical_smoking_gun_indicators` to focus on high-signal events.
+- Add `--level Warning` or `--level Error` to reduce noise.
+
+### 2) Focus on credential access and privilege escalation
+
+```bash
+python ThreatHunting.py --hours 48 --categories credential_access_and_privilege_escalation --format json
+```
+
+Check for suspicious `4688` process creations, `4672` special privileges, group membership changes, and log clears (`1102`).
+
+### 3) Persistence and startup modifications
+
+```bash
+python ThreatHunting.py --hours 72 --categories persistence_and_startup_modification --format text --matrix
+```
+
+Look for scheduled tasks (`4698`, Task Scheduler 106/140), services changes (`7040`, `7045`), and registry autoruns (12/13/14).
+
+### 4) Lateral movement and remote access
+
+```bash
+python ThreatHunting.py --hours 24 --categories lateral_movement_and_remote_access --format text
+```
+
+Filter by description for known tools or hosts:
+
+```bash
+python ThreatHunting.py --hours 24 --categories lateral_movement_and_remote_access --description-filter "psexec"
+```
+
+### 5) Execution and defense evasion (PowerShell/WMI)
+
+```bash
+python ThreatHunting.py --hours 24 --categories execution_and_defense_evasion --format json
+```
+
+Add source/description filters for suspicious script blocks (`4104`) and module logs (`4103`).
+
+### 6) Exfiltration and C2 indicators
+
+```bash
+python ThreatHunting.py --hours 48 --categories exfiltration_and_c2 --format text --matrix
+```
+
+Look for Windows Filtering Platform events (`5156`, `5157`) and tool-based transfers.
+
+### 7) Full-level sweep ignoring event IDs (noise-tolerant)
+
+```bash
+python ThreatHunting.py --hours 12 --level-all Error --format json
+```
+
+Use this to quickly surface all errors in a time window, then pivot.
+
+---
+
+## Practical Investigation Tips
+
+- Run as Administrator for best coverage; the `Security` log may be restricted otherwise. Use `--elevate` if needed.
+- Start broad (matrix view) to spot patterns; then pivot with `--source-filter` and `--description-filter`.
+- Save artifacts: `-o results.json` or `-o findings.csv` to preserve triage data.
+- Validate log coverage first: `--check-availability` and `--show-retention`.
+- Improve retention if allowed: `--configure-retention DAYS --method auto`.
+- Confirm suspicious activity with multiple signals (e.g., process creation + new service + unusual outbound connection).
+- Correlate local findings with centralized SIEM data when available.
+
+---
+
+## Usage Examples and Combinations
+
+General:
+
+```bash
+# Default sweep, last 24h, text output
+python ThreatHunting.py
+
+# JSON output for downstream tooling
+python ThreatHunting.py --format json --hours 6
+
+# Matrix view for console triage
+python ThreatHunting.py --matrix --hours 12
+```
+
+Category scoping:
+
+```bash
+# Single category
+python ThreatHunting.py --categories critical_smoking_gun_indicators --hours 24
+
+# Multiple categories
+python ThreatHunting.py --categories credential_access_and_privilege_escalation execution_and_defense_evasion --hours 48 --format json
+```
+
+Log scoping:
+
+```bash
+# Only Security log (admin recommended)
+python ThreatHunting.py --log-filter Security --hours 24 --format text
+
+# Application log only
+python ThreatHunting.py --log-filter Application --hours 24 --matrix
+```
+
+Level filtering:
+
+```bash
+# Only Warning-level events
+python ThreatHunting.py --level Warning --hours 24
+
+# Ignore event ID lists; show all Error events in window
+python ThreatHunting.py --level-all Error --hours 24 --format json
+```
+
+Source/description filtering:
+
+```bash
+# Filter by source contains 'Service Control Manager'
+python ThreatHunting.py --source-filter "Service Control Manager" --hours 24
+
+# Filter description for known tool strings (example: OpenVPN)
+python ThreatHunting.py --description-filter "OpenVPN" --hours 24 --format json
+
+# Combine multiple filters
+python ThreatHunting.py --log-filter System --level Warning --source-filter "Driver" --description-filter "failed"
+```
+
+Output to file:
+
+```bash
+# Save matrix (treated as text) to file
+python ThreatHunting.py --matrix -o triage.txt
+
+# Save JSON results safely to UTF-8 file
+python ThreatHunting.py --format json -o results.json
+```
+
+Custom configuration:
+
+```bash
+# Load your own event set
+python ThreatHunting.py --config custom_events.json --hours 72 --format text
+
+# List categories and exit
+python ThreatHunting.py --list-categories
+```
+
+Admin handling:
+
+```bash
+# Suppress non-elevated warning when permissible
+python ThreatHunting.py --no-admin-warning --hours 12
+
+# Auto re-launch elevated when needed (UAC prompt)
+python ThreatHunting.py --elevate --hours 24 --categories critical_smoking_gun_indicators
+```
+
+Retention and coverage:
+
+```bash
+# Check how far back logs retain data per log
+python ThreatHunting.py --check-availability
+
+# Show current retention settings
+python ThreatHunting.py --show-retention
+
+# Configure retention for 365 days, auto method
+python ThreatHunting.py --configure-retention 365 --max-size 2048 --retention-policy overwrite_as_needed --method auto
+
+# Force attempt even if admin not detected (may still fail)
+python ThreatHunting.py --configure-retention 365 --force
+```
+
+Composed examples:
+
+```bash
+# 1) Broad triage with matrix and output file
+python ThreatHunting.py --hours 24 --matrix -o triage.txt
+
+# 2) High-signal sweep + JSON export for SOC enrichment
+python ThreatHunting.py --categories critical_smoking_gun_indicators --hours 48 --format json -o indicators.json
+
+# 3) PowerShell/WMI evasion focus with description pivoting
+python ThreatHunting.py --categories execution_and_defense_evasion --description-filter "script" --hours 24 --format text
+
+# 4) Lateral movement focus, only Security log, errors only
+python ThreatHunting.py --categories lateral_movement_and_remote_access --log-filter Security --level Error --hours 24 --format json
+
+# 5) Custom event set, Application log, warnings in last 7 days
+python ThreatHunting.py --config custom_events.json --log-filter Application --level Warning --hours 168 --matrix
+```
+
+---
+
+## Troubleshooting
+
+- No results found: Expand time window with `--hours`, or switch to `--level-all` to validate logging volume.
+- Access denied on `Security` log: Run elevated (or use `--elevate`). Some policies may still restrict access even when elevated.
+- Output redirection issues: Use `-o` to write directly to file with UTF‑8 handling.
+- Retention configuration fails: Verify elevation and try `--method powershell` or `--method registry`. Some environments enforce policies that override local settings.
+
+---
+
+## License
+
+See `LICENSE` in this repository.
+
 # ThreatHunting
 Looking for Indicators of Compromise
