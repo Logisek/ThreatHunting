@@ -1,4 +1,4 @@
-## ThreatHunting.py — Windows Event Log Threat Hunting Toolkit
+## ThreatHunting - Windows Event Log Threat Hunting Toolkit
 
 Windows-focused threat hunting utility to rapidly search Windows Event Logs for suspicious activity across key tactics like credential access, persistence, lateral movement, execution/defense evasion, exfiltration/C2, and smoking-gun indicators. It supports filters by time, log type, event level, source, and description, and can display results in JSON, CSV, text, or a compact matrix view. It also includes helpers to check log availability, review and configure retention, and open Event Viewer or the log directory.
 
