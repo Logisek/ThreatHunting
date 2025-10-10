@@ -20,6 +20,11 @@ try:
 except Exception:
     yaml = None
 try:
+    from Evtx.Evtx import Evtx as EvtxReader
+except Exception:
+    EvtxReader = None
+import xml.etree.ElementTree as ET
+try:
     import requests
 except Exception:
     requests = None
@@ -191,11 +196,14 @@ ALL_EVENT_IDS = None
 
 
 class WindowsEventLogSearcher:
-    def __init__(self, sigma_rules=None, sigma_boost=10):
+    def __init__(self, sigma_rules=None, sigma_boost=10, iocs=None, ioc_boost=5):
         self.logs = ['Application', 'Security', 'Setup', 'System']
         self.results = []
         self.sigma_rules = sigma_rules or []
         self.sigma_boost = sigma_boost
+        self.iocs = iocs or {'ips': set(), 'domains': set(), 'hashes': set(), 'substrings': set()}
+        self.ioc_boost = ioc_boost
+        self.ioc_hits_counter = {}
 
     def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, concurrency=1, progress=False, allowlist=None, suppress_rules=None):
         """
@@ -239,6 +247,29 @@ class WindowsEventLogSearcher:
         self.max_events = max_events if isinstance(max_events, int) and max_events >= 0 else 0
         self.allowlist = allowlist or {}
         self.suppress_rules = suppress_rules or []
+
+        # If EVTX mode, override logs handling
+        self.evtx_paths = getattr(args, 'evtx', None) if 'args' in globals() else None
+        if self.evtx_paths:
+            # Offline parsing mode
+            files = []
+            for p in self.evtx_paths:
+                if os.path.isdir(p):
+                    for root, _, fs in os.walk(p):
+                        for fn in fs:
+                            if fn.lower().endswith('.evtx'):
+                                files.append(os.path.join(root, fn))
+                elif os.path.isfile(p) and p.lower().endswith('.evtx'):
+                    files.append(p)
+            if not self.quiet:
+                print(f"Parsing {len(files)} EVTX file(s)...")
+            for idx, f in enumerate(files):
+                try:
+                    self._search_evtx_file(f, event_ids, start_time, position=idx)
+                except Exception as e:
+                    print(f"Error parsing {f}: {e}")
+            self._output_results(output_format)
+            return
 
         # Apply log filter to logs list
         if log_filter:
@@ -373,6 +404,65 @@ class WindowsEventLogSearcher:
                 print(f"Error reading {log_name} log: {e}")
             return []
 
+    def _search_evtx_file(self, path, event_ids, start_time, position=0):
+        if EvtxReader is None:
+            print("Evtx parsing not available. Install python-evtx.")
+            return
+        try:
+            if not self.quiet:
+                print(f"Searching EVTX: {path}")
+            with EvtxReader(path) as evtx:
+                for record in evtx.records():
+                    try:
+                        xml = record.xml()
+                        root = ET.fromstring(xml)
+                        ns = {'e':'http://schemas.microsoft.com/win/2004/08/events/event'}
+                        # Timestamp
+                        ts = root.findtext('.//e:TimeCreated', namespaces=ns)
+                        # Fallback: system time in attributes
+                        if ts is None:
+                            node = root.find('.//e:System/e:TimeCreated', namespaces=ns)
+                            if node is not None and 'SystemTime' in node.attrib:
+                                ts = node.attrib.get('SystemTime')
+                        if ts:
+                            try:
+                                # normalize to '%Y-%m-%d %H:%M:%S'
+                                ts_dt = datetime.fromisoformat(ts.replace('Z','+00:00')).astimezone().replace(tzinfo=None)
+                            except Exception:
+                                ts_dt = datetime.strptime(ts.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+                        else:
+                            ts_dt = datetime.min
+                        if ts_dt < start_time:
+                            continue
+                        # Channel/Provider/EventID
+                        log_name = root.findtext('.//e:System/e:Channel', namespaces=ns) or 'EVTX'
+                        provider = root.findtext('.//e:System/e:Provider', namespaces=ns) or 'Unknown'
+                        eid_text = root.findtext('.//e:System/e:EventID', namespaces=ns) or '0'
+                        try:
+                            eid = int(eid_text)
+                        except Exception:
+                            eid = 0
+                        # EventData text (flatten)
+                        desc_parts = []
+                        for data in root.findall('.//e:EventData/e:Data', namespaces=ns):
+                            val = ''.join(data.itertext()).strip()
+                            if val:
+                                desc_parts.append(val)
+                        description = ' | '.join(desc_parts) or 'No description available'
+
+                        dummy_event = type('X', (), {})()
+                        dummy_event.EventType = win32con.EVENTLOG_INFORMATION_TYPE
+                        dummy_event.SourceName = provider
+                        dummy_event.ComputerName = 'offline'
+                        dummy_event.EventID = eid
+                        dummy_event.TimeGenerated = ts_dt
+                        # process via common path
+                        self._process_event(dummy_event, log_name)
+                    except Exception:
+                        continue
+        except Exception as e:
+            print(f"Error reading EVTX '{path}': {e}")
+
     def _process_event(self, event, log_name):
         """Process and store event data"""
         try:
@@ -446,6 +536,13 @@ class WindowsEventLogSearcher:
                     event_data['sigma_tags'] = sorted(list(tags))
                     event_data['score'] = event_data.get('score', 0) + self.sigma_boost * len(matches)
 
+            # IOC matching
+            if self.iocs:
+                hits = self._apply_iocs(event_data)
+                if hits:
+                    event_data['ioc_hits'] = hits
+                    event_data['score'] = event_data.get('score', 0) + self.ioc_boost * len(hits)
+
             # Apply field filters if provided
             if self._matches_field_filters(event_data) and not self._is_suppressed(event_data):
                 self.results.append(event_data)
@@ -497,6 +594,8 @@ class WindowsEventLogSearcher:
         self._output_triage_summaries()
         # Tamper and health checks
         self._output_tamper_health_checks()
+        # IOC summary
+        self._output_ioc_summary()
 
     def send_sinks(self, webhook_url=None, hec_url=None, hec_token=None, batch_size=500, use_jsonl=False):
         """Send results to webhook or Splunk HEC endpoints."""
@@ -679,6 +778,8 @@ class WindowsEventLogSearcher:
             print(f"    Computer: {event['computer']}")
             if event.get('sigma_matches'):
                 print(f"    Sigma: {', '.join(event.get('sigma_matches', []))}")
+            if event.get('ioc_hits'):
+                print(f"    IOCs: {', '.join(event.get('ioc_hits', []))}")
             print(
                 f"    Description: {event['description'][:200]}{'...' if len(event['description']) > 200 else ''}")
             print("-" * 60)
@@ -785,6 +886,50 @@ class WindowsEventLogSearcher:
         if score > 100:
             score = 100
         return score, reasons
+
+    def _apply_iocs(self, e):
+        hits = []
+        try:
+            desc = (e.get('description') or '')
+            proc = (e.get('process') or '')
+            usr = (e.get('user') or '')
+            src = (e.get('source') or '')
+            ip = (e.get('ip') or '')
+            fields = ' '.join([desc, proc, usr, src, ip]).lower()
+            # IPs
+            for v in self.iocs.get('ips', set()):
+                if v in fields:
+                    hits.append(f'ip:{v}')
+                    self.ioc_hits_counter[f'ip:{v}'] = self.ioc_hits_counter.get(f'ip:{v}', 0) + 1
+            # Domains
+            for v in self.iocs.get('domains', set()):
+                if v in fields:
+                    hits.append(f'domain:{v}')
+                    self.ioc_hits_counter[f'domain:{v}'] = self.ioc_hits_counter.get(f'domain:{v}', 0) + 1
+            # Hashes (sha1/sha256/md5 substrings)
+            for v in self.iocs.get('hashes', set()):
+                if v in fields:
+                    hits.append(f'hash:{v[:8]}...')
+                    self.ioc_hits_counter[f'hash:{v}'] = self.ioc_hits_counter.get(f'hash:{v}', 0) + 1
+            # Substrings (command lines/artifacts)
+            for v in self.iocs.get('substrings', set()):
+                if v in fields:
+                    hits.append(f'sub:{v}')
+                    self.ioc_hits_counter[f'sub:{v}'] = self.ioc_hits_counter.get(f'sub:{v}', 0) + 1
+        except Exception:
+            pass
+        return hits
+
+    def _output_ioc_summary(self):
+        try:
+            if not self.ioc_hits_counter:
+                return
+            print("\nIOC hits summary:")
+            print("-" * 80)
+            for k, v in sorted(self.ioc_hits_counter.items(), key=lambda x: x[1], reverse=True)[:15]:
+                print(f"  {k}: {v}")
+        except Exception as e:
+            print(f"Error printing IOC summary: {e}")
 
     def _apply_sigma_rules(self, e):
         """Very lightweight Sigma-like matcher for simple selections.
@@ -1652,7 +1797,68 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
             except Exception as e:
                 print(f"Warning: failed to load Sigma rules: {e}")
 
-    searcher = WindowsEventLogSearcher(sigma_rules=sigma_rules, sigma_boost=getattr(args, 'sigma_boost', 10))
+    # Load IOCs if provided
+    iocs = {'ips': set(), 'domains': set(), 'hashes': set(), 'substrings': set()}
+    try:
+        if getattr(args, 'ioc', None):
+            fmt = getattr(args, 'ioc_format', 'csv')
+            if fmt == 'csv':
+                import csv
+                with open(args.ioc, 'r', encoding='utf-8', errors='ignore') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        typ = (row.get('type') or '').strip().lower()
+                        val = (row.get('value') or '').strip().lower()
+                        if not typ or not val:
+                            continue
+                        if typ in ('ip','ips'):
+                            iocs['ips'].add(val)
+                        elif typ in ('domain','domains'):
+                            iocs['domains'].add(val)
+                        elif typ in ('hash','md5','sha1','sha256'):
+                            iocs['hashes'].add(val)
+                        else:
+                            iocs['substrings'].add(val)
+            elif fmt == 'txt':
+                with open(args.ioc, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        val = line.strip().lower()
+                        if not val or val.startswith('#'):
+                            continue
+                        # naive classification
+                        if any(c.isalpha() for c in val) and '.' in val and not any(ch in val for ch in [' ', '\t']):
+                            iocs['domains'].add(val)
+                        elif all(ch in '0123456789abcdef' for ch in val) and len(val) in (32,40,64):
+                            iocs['hashes'].add(val)
+                        elif all(ch in '0123456789.:abcdef' for ch in val) and any(ch in val for ch in '.:'):
+                            iocs['ips'].add(val)
+                        else:
+                            iocs['substrings'].add(val)
+            elif fmt == 'stix':
+                with open(args.ioc, 'r', encoding='utf-8', errors='ignore') as f:
+                    stix = json.load(f)
+                objs = stix.get('objects', []) if isinstance(stix, dict) else []
+                for o in objs:
+                    ind = o.get('indicator') or o if isinstance(o, dict) else {}
+                    patt = ind.get('pattern') or ''
+                    val = o.get('name') or ''
+                    blob = f"{patt} {val}".lower()
+                    # naive extraction
+                    for token in blob.replace("'", ' ').replace('"',' ').split():
+                        t = token.strip()
+                        if not t:
+                            continue
+                        if any(c.isalpha() for c in t) and '.' in t and not any(ch in t for ch in [' ', '\t']):
+                            iocs['domains'].add(t)
+                        elif all(ch in '0123456789abcdef' for ch in t) and len(t) in (32,40,64):
+                            iocs['hashes'].add(t)
+                        elif all(ch in '0123456789.:abcdef' for ch in t) and any(ch in t for ch in '.:'):
+                            iocs['ips'].add(t)
+            print(f"Loaded IOCs: ips={len(iocs['ips'])}, domains={len(iocs['domains'])}, hashes={len(iocs['hashes'])}, subs={len(iocs['substrings'])}")
+    except Exception as e:
+        print(f"Warning: failed to load IOCs: {e}")
+
+    searcher = WindowsEventLogSearcher(sigma_rules=sigma_rules, sigma_boost=getattr(args, 'sigma_boost', 10), iocs=iocs, ioc_boost=getattr(args, 'ioc_boost', 5))
 
     if all_events:
         event_ids = []
@@ -1862,6 +2068,10 @@ if __name__ == "__main__":
                         help='Number of logs to process in parallel (1 = sequential)')
     parser.add_argument('--progress', action='store_true',
                         help='Show tqdm progress bars per log (requires tqdm)')
+    parser.add_argument('--check-service', action='store_true',
+                        help='Check Windows Event Log service status and exit')
+    parser.add_argument('--evtx', nargs='+', type=str,
+                        help='One or more .evtx files or directories to parse offline (searches recursively)')
     # Output sinks
     parser.add_argument('--webhook', type=str,
                         help='HTTP endpoint to POST results (JSONL when --format jsonl, JSON otherwise)')
@@ -1876,6 +2086,13 @@ if __name__ == "__main__":
                         help='Directory with Sigma YAML rules to load and evaluate locally')
     parser.add_argument('--sigma-boost', type=int, default=10,
                         help='Score boost per matched Sigma rule (default 10)')
+    # IOCs
+    parser.add_argument('--ioc', type=str,
+                        help='Path to IOC file (CSV/TXT/STIX JSON) containing hashes, IPs, domains, or substrings')
+    parser.add_argument('--ioc-format', type=str, choices=['csv','txt','stix'], default='csv',
+                        help='IOC input format (default csv). CSV headers: type,value')
+    parser.add_argument('--ioc-boost', type=int, default=5,
+                        help='Score boost per IOC match (default 5)')
     parser.add_argument('--allowlist', type=str,
                         help='Path to JSON allowlist file to suppress known/expected activity (event_ids, sources, users, process_regex, description_regex)')
     parser.add_argument('--suppress', nargs='*',
@@ -2005,6 +2222,38 @@ if __name__ == "__main__":
         for category, event_ids in EVENTS.items():
             print(f"  {category}: {len(event_ids)} Event IDs")
         sys.exit(0)
+
+    if getattr(args, 'check_service', False):
+        def check_eventlog_service_status():
+            try:
+                print("Checking Windows Event Log service (eventlog)...")
+                # Query runtime state
+                r = subprocess.run(['sc', 'query', 'eventlog'], capture_output=True, text=True)
+                state = 'Unknown'
+                if r.stdout:
+                    for line in r.stdout.splitlines():
+                        if 'STATE' in line:
+                            state = line.split(':', 1)[1].strip()
+                            break
+                # Query configuration (start type)
+                r2 = subprocess.run(['sc', 'qc', 'eventlog'], capture_output=True, text=True)
+                start_type = 'Unknown'
+                if r2.stdout:
+                    for line in r2.stdout.splitlines():
+                        if 'START_TYPE' in line:
+                            start_type = line.split(':', 1)[1].strip()
+                            break
+                print(f"  Service: eventlog")
+                print(f"  State:   {state}")
+                print(f"  Start:   {start_type}")
+                if 'RUNNING' not in state.upper():
+                    print("\nThe Event Log service is not running. You may start it with:")
+                    print("  sc start eventlog")
+                sys.exit(0)
+            except Exception as e:
+                print(f"Error checking service status: {e}")
+                sys.exit(1)
+        check_eventlog_service_status()
 
     if args.check_availability:
         searcher = WindowsEventLogSearcher()

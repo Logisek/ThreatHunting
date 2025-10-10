@@ -1,0 +1,5 @@
+type,value
+ip,1.2.3.4
+domain,evil.example.com
+hash,44d88612fea8a8f36de82e1278abb02f
+substring,powershell -enc

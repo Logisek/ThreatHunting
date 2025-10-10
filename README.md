@@ -12,6 +12,8 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 - Risk scoring for each event + triage summaries (Top findings, category/source heatmaps)
 - Tamper and health checks (log clears, policy changes, service stops, time skew, large gaps)
 - Sigma rule matching (load local YAML rules, tag matches, boost scores)
+- IOC-driven hunting (ingest IPs/domains/hashes/substrings; tag matches; boost scores; per-IOC hit summary)
+- Offline EVTX parsing (hunt across .evtx files/directories, preserve channel/timestamps)
 - Config management: single/multiple configs, schema validation, merge diffs, and named presets
 - Sinks and integrations: HTTP webhook and Splunk HEC
 - Quick checks for log availability coverage and retention settings
@@ -40,7 +42,7 @@ pip install -r requirements.txt
 Or install manually:
 
 ```bash
-pip install pywin32 tqdm requests colorama PyYAML
+pip install pywin32 tqdm requests colorama PyYAML python-evtx
 ```
 
 Run from project directory:
@@ -126,6 +128,43 @@ When to use which:
 
 ---
 
+## Artifact directories: IoC, STIX, EVTX, and Sigma
+
+This repository includes directories with ready-to-use hunting assets:
+
+- `sigma/`:
+  - Location for Sigma-style rules. We include starter rules under `sigma/windows/` (e.g., `process_creation.yml`, `log_cleared.yml`, `service_installed.yml`).
+  - Use with `--sigma-dir sigma/windows` to tag events locally and boost scores.
+
+- `ioc/`:
+  - IOC samples for quick testing and demos.
+  - `ioc/common_iocs.csv` (CSV headers: `type,value`) supports `ip`, `domain`, `hash`, `substring`.
+  - `ioc/common_iocs.txt` simple line-based list; auto-detected type.
+  - `ioc/stix/common_stix.json` minimal STIX bundle with indicators.
+  - Use with `--ioc` and `--ioc-format {csv,txt,stix}`.
+
+- `evtx/`:
+  - Place sample `.evtx` files here (see `evtx/README.txt`) for offline hunting.
+  - Use with `--evtx evtx` to scan the entire directory recursively.
+
+Quick commands:
+
+```bash
+# Sigma local matching
+python ThreatHunting.py --hours 48 --all-events --sigma-dir sigma/windows --format text --matrix
+
+# IOC CSV ingestion
+python ThreatHunting.py --hours 24 --all-events --ioc ioc/common_iocs.csv --ioc-format csv --format json
+
+# STIX JSON ingestion
+python ThreatHunting.py --hours 24 --all-events --ioc ioc/stix/common_stix.json --ioc-format stix --format jsonl
+
+# Offline EVTX hunting (directory)
+python ThreatHunting.py --hours 168 --evtx evtx --all-events --format text --matrix
+```
+
+---
+
 ## Argument Reference
 
 - `--hours <int>`: Time window to search backward from now (default: 24).
@@ -159,11 +198,16 @@ When to use which:
 - `--max-events <int>`: Maximum events to check per log (0 = unlimited). Replaces the older ~1000 internal cap.
 - `--concurrency <int>`: Number of logs to process in parallel.
 - `--progress`: Show per-log progress bars with ETA (requires `tqdm`).
+- `--check-service`: Check Windows Event Log service status and exit.
 - `--allowlist <path>`: JSON file listing known/expected activity to suppress.
 - `--suppress <rules>`: Ad-hoc suppression rules (e.g., `source:Security-SPP eid:4688 user:ACME\\alice`).
 - `--webhook <url>`: POST results to an HTTP endpoint (JSONL for `--format jsonl`, otherwise JSON batches).
 - `--hec-url <url>` and `--hec-token <token>`: Send results to Splunk HEC.
 - `--sink-batch <int>`: Batch size for sink posts.
+- `--ioc <path>`: IOC file path (CSV/TXT/STIX). CSV must have headers `type,value`.
+- `--ioc-format {csv,txt,stix}`: IOC input format (default csv).
+- `--ioc-boost <int>`: Score boost per IOC hit (default 5).
+- `--evtx <paths>`: One or more .evtx files or directories (recursive) to parse offline.
 - `--sigma-dir <path>`: Directory with Sigma YAML rules to evaluate locally (simple selection support).
 - `--sigma-boost <int>`: Score boost per matched Sigma rule (default 10).
 
@@ -566,6 +610,9 @@ python ThreatHunting.py --hours 168 --all-events --max-events 30000 --concurrenc
 
 # Focused lookback for log tamper signals
 python ThreatHunting.py --hours 7 --event-ids 1102 1101 1100 4719 --format text
+
+# Offline EVTX hunting across a directory of files (triage bundle)
+python ThreatHunting.py --hours 168 --evtx C:\\triage\\evtx_dump --all-events --format text --matrix
 ```
 
 ### Sigma rules examples
@@ -579,6 +626,22 @@ python ThreatHunting.py --hours 24 --event-ids 4688 7045 1102 --sigma-dir sigma/
 
 # Use Sigma alongside allowlist suppression to reduce noise
 python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --allowlist config/allowlist.json --format json
+```
+
+### IOC-driven hunting examples
+
+```bash
+# CSV IOCs (type,value). Types: ip, domain, hash, substring
+python ThreatHunting.py --hours 24 --all-events --ioc iocs.csv --ioc-format csv --format text --matrix
+
+# TXT list (mixed IOCs). Each line one indicator; auto-detected as ip/domain/hash/substring
+python ThreatHunting.py --hours 48 --all-events --ioc iocs.txt --ioc-format txt --format json
+
+# STIX JSON indicators (naive extraction from pattern/name)
+python ThreatHunting.py --hours 24 --all-events --ioc stix.json --ioc-format stix --format jsonl
+
+# IOC hunt combined with Sigma and allowlist for reduced noise
+python ThreatHunting.py --hours 24 --all-events --ioc iocs.csv --ioc-format csv --sigma-dir sigma/windows --allowlist config/allowlist.json --format text --matrix
 ```
 
 ### Sigma rules (authoring and organization)
