@@ -14,6 +14,17 @@ import os
 from contextlib import redirect_stdout
 import ctypes
 import re
+import json as _json
+try:
+    import requests
+except Exception:
+    requests = None
+try:
+    from colorama import Fore, Style, init as colorama_init
+    colorama_init(autoreset=True)
+except Exception:
+    Fore = None
+    Style = None
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     from tqdm import tqdm
@@ -417,6 +428,9 @@ class WindowsEventLogSearcher:
             self._output_matrix()
         elif output_format == 'json':
             print(json.dumps(self.results, indent=2, default=str))
+        elif output_format == 'jsonl':
+            for e in self.results:
+                print(json.dumps(e, default=str))
         elif output_format == 'csv':
             self._output_csv()
         else:  # text format
@@ -424,6 +438,38 @@ class WindowsEventLogSearcher:
 
         # After main output, print triage summaries
         self._output_triage_summaries()
+
+    def send_sinks(self, webhook_url=None, hec_url=None, hec_token=None, batch_size=500, use_jsonl=False):
+        """Send results to webhook or Splunk HEC endpoints."""
+        if not self.results:
+            return
+        if not webhook_url and not hec_url:
+            return
+        if requests is None:
+            print("Warning: requests not installed; cannot send to sinks.")
+            return
+        # Batch iterator
+        def batches(lst, n):
+            for i in range(0, len(lst), n):
+                yield lst[i:i+n]
+
+        try:
+            if webhook_url:
+                for chunk in batches(self.results, max(1, batch_size)):
+                    data = '\n'.join(_json.dumps(item, default=str) for item in chunk) if use_jsonl else _json.dumps(chunk, default=str)
+                    headers = {'Content-Type': 'application/x-ndjson' if use_jsonl else 'application/json'}
+                    r = requests.post(webhook_url, data=data if use_jsonl else data, headers=headers, timeout=10)
+                    if r.status_code >= 300:
+                        print(f"Webhook sink POST failed: {r.status_code} {r.text[:120]}")
+            if hec_url and hec_token:
+                headers = {'Authorization': f'Splunk {hec_token}', 'Content-Type': 'application/json'}
+                for chunk in batches(self.results, max(1, batch_size)):
+                    payload = '\n'.join(_json.dumps({'event': item}, default=str) for item in chunk)
+                    r = requests.post(hec_url, data=payload, headers=headers, timeout=10)
+                    if r.status_code >= 300:
+                        print(f"HEC sink POST failed: {r.status_code} {r.text[:120]}")
+        except Exception as e:
+            print(f"Error sending to sinks: {e}")
 
     def _output_triage_summaries(self):
         """Print Top findings and heatmaps by category/source."""
@@ -474,7 +520,20 @@ class WindowsEventLogSearcher:
     def _output_text(self):
         """Output results in human-readable text format"""
         for i, event in enumerate(self.results, 1):
-            print(f"\n[{i}] Event ID {event['event_id']} - {event['category']}")
+            # Color based on score
+            score = int(event.get('score', 0) or 0)
+            color_prefix = ''
+            color_suffix = ''
+            if Fore and Style:
+                if score >= 70:
+                    color_prefix = Fore.RED + Style.BRIGHT
+                elif score >= 40:
+                    color_prefix = Fore.YELLOW + Style.BRIGHT
+                elif score > 0:
+                    color_prefix = Fore.GREEN
+                color_suffix = Style.RESET_ALL
+
+            print(f"\n{color_prefix}[{i}] Event ID {event['event_id']} - {event['category']}{color_suffix}")
             print(f"    Time: {event['timestamp']}")
             print(f"    Log: {event['log_name']}")
             print(f"    Level: {event['level']}")
@@ -1530,7 +1589,7 @@ if __name__ == "__main__":
     parser.add_argument('--hours', type=int, default=24,
                         help='Hours to look back (default: 24)')
     parser.add_argument(
-        '--format', choices=['json', 'text', 'csv'], default='text', help='Output format')
+        '--format', choices=['json', 'jsonl', 'text', 'csv'], default='text', help='Output format')
     parser.add_argument('--categories', nargs='+',
                         help='Specific threat categories to search for')
     parser.add_argument('--list-categories', action='store_true',
@@ -1598,6 +1657,15 @@ if __name__ == "__main__":
                         help='Number of logs to process in parallel (1 = sequential)')
     parser.add_argument('--progress', action='store_true',
                         help='Show tqdm progress bars per log (requires tqdm)')
+    # Output sinks
+    parser.add_argument('--webhook', type=str,
+                        help='HTTP endpoint to POST results (JSONL when --format jsonl, JSON otherwise)')
+    parser.add_argument('--hec-url', type=str,
+                        help='Splunk HEC URL (e.g., https://splunk:8088/services/collector)')
+    parser.add_argument('--hec-token', type=str,
+                        help='Splunk HEC token')
+    parser.add_argument('--sink-batch', type=int, default=500,
+                        help='Sink batch size (default 500)')
     parser.add_argument('--allowlist', type=str,
                         help='Path to JSON allowlist file to suppress known/expected activity (event_ids, sources, users, process_regex, description_regex)')
     parser.add_argument('--suppress', nargs='*',
@@ -1613,6 +1681,8 @@ if __name__ == "__main__":
     parser.add_argument('--not', dest='negate', action='store_true', help='Negate the combined field filter result (NOT)')
 
     args = parser.parse_args()
+    # expose args globally for helper access
+    globals()['args'] = args
 
     # Validate incompatible flags
     if args.matrix and args.format in ['json', 'csv']:
@@ -1848,6 +1918,13 @@ if __name__ == "__main__":
                     explicit_event_ids=args.event_ids,
                     quiet=False
                 )
+
+            # Send results to sinks if requested
+            if getattr(args, 'webhook', None) or (getattr(args, 'hec_url', None) and getattr(args, 'hec_token', None)):
+                # results already in searcher.results via global flow; construct a lightweight sender
+                sender = WindowsEventLogSearcher()
+                sender.results = searcher.results if 'searcher' in locals() else []
+                sender.send_sinks(webhook_url=getattr(args, 'webhook', None), hec_url=getattr(args, 'hec_url', None), hec_token=getattr(args, 'hec_token', None), batch_size=getattr(args, 'sink_batch', 500), use_jsonl=(args.format == 'jsonl'))
     except KeyboardInterrupt:
         print("\nSearch interrupted by user.")
     except Exception as e:

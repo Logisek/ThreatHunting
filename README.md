@@ -116,6 +116,7 @@ When to use which:
 
 - `--hours <int>`: Time window to search backward from now (default: 24).
 - `--format {json,text,csv}`: Output format (default: text).
+- `--format {json,jsonl,text,csv}`: Output format (default: text). `jsonl` prints one JSON object per line.
 - `--categories <list>`: Limit search to one or more category names.
 - `--list-categories`: List available categories and exit.
 - `--check-availability`: Show how far back each log retains data and summary.
@@ -144,6 +145,9 @@ When to use which:
 - `--progress`: Show per-log progress bars with ETA (requires `tqdm`).
 - `--allowlist <path>`: JSON file listing known/expected activity to suppress.
 - `--suppress <rules>`: Ad-hoc suppression rules (e.g., `source:Security-SPP eid:4688 user:ACME\\alice`).
+- `--webhook <url>`: POST results to an HTTP endpoint (JSONL for `--format jsonl`, otherwise JSON batches).
+- `--hec-url <url>` and `--hec-token <token>`: Send results to Splunk HEC.
+- `--sink-batch <int>`: Batch size for sink posts.
 
 Scoring and triage output:
 - Every result includes `score` (0–100) and `risk_reasons` in JSON; text/matrix/CSV include `score`.
@@ -479,6 +483,12 @@ python ThreatHunting.py --hours 168 --config config/event_ids.json --allowlist c
 
 # Concurrency + progress with scoring in matrix (score column visible)
 python ThreatHunting.py --hours 72 --all-events --max-events 0 --process-filter "powershell\\.exe|cmd\\.exe" --concurrency 4 --progress --format text --matrix
+
+# Send JSONL to a webhook sink
+python ThreatHunting.py --hours 24 --all-events --format jsonl --webhook https://example.org/hook
+
+# Send to Splunk HEC
+python ThreatHunting.py --hours 24 --event-ids 4688 4698 --format jsonl --hec-url https://splunk:8088/services/collector --hec-token YOUR_TOKEN
 ```
 
 ### Performance and progress examples
