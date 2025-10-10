@@ -137,7 +137,7 @@ class WindowsEventLogSearcher:
         self.logs = ['Application', 'Security', 'Setup', 'System']
         self.results = []
 
-    def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, concurrency=1, progress=False):
+    def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, concurrency=1, progress=False, allowlist=None, suppress_rules=None):
         """
         Search for specific Event IDs in Windows Event Logs
 
@@ -177,6 +177,8 @@ class WindowsEventLogSearcher:
         self.bool_logic = bool_logic
         self.negate = negate
         self.max_events = max_events if isinstance(max_events, int) and max_events >= 0 else 0
+        self.allowlist = allowlist or {}
+        self.suppress_rules = suppress_rules or []
 
         # Apply log filter to logs list
         if log_filter:
@@ -372,7 +374,7 @@ class WindowsEventLogSearcher:
             }
 
             # Apply field filters if provided
-            if self._matches_field_filters(event_data):
+            if self._matches_field_filters(event_data) and not self._is_suppressed(event_data):
                 self.results.append(event_data)
 
         except Exception as e:
@@ -549,6 +551,75 @@ class WindowsEventLogSearcher:
             return True
         match = all(results) if self.bool_logic == 'and' else any(results)
         return (not match) if self.negate else match
+
+    def _is_suppressed(self, event_data):
+        """Return True if event matches allowlist or suppress rules."""
+        # Allowlist (suppression) via file
+        try:
+            al = self.allowlist
+            if al:
+                # Event IDs
+                if 'event_ids' in al and event_data.get('event_id') in set(al.get('event_ids', [])):
+                    return True
+                # Sources exact
+                if 'sources' in al and event_data.get('source') in set(al.get('sources', [])):
+                    return True
+                # Users exact
+                if 'users' in al and event_data.get('user') in set(al.get('users', [])):
+                    return True
+                # Process regex
+                for pat in al.get('process_regex', []) or []:
+                    try:
+                        if event_data.get('process') and re.search(pat, event_data.get('process'), re.IGNORECASE):
+                            return True
+                    except re.error:
+                        continue
+                # Description regex
+                for pat in al.get('description_regex', []) or []:
+                    try:
+                        if event_data.get('description') and re.search(pat, event_data.get('description'), re.IGNORECASE):
+                            return True
+                    except re.error:
+                        continue
+        except Exception:
+            pass
+
+        # Ad-hoc suppress rules from CLI: format like 'source:Security-SPP' or 'eid:4688'
+        try:
+            for rule in self.suppress_rules or []:
+                if not rule or ':' not in rule:
+                    continue
+                key, value = rule.split(':', 1)
+                key = key.strip().lower()
+                value = value.strip()
+                if key in ('eid', 'event_id'):
+                    try:
+                        if int(event_data.get('event_id')) == int(value):
+                            return True
+                    except Exception:
+                        continue
+                elif key == 'source':
+                    if str(event_data.get('source', '')).lower() == value.lower():
+                        return True
+                elif key == 'user':
+                    if str(event_data.get('user', '')).lower() == value.lower():
+                        return True
+                elif key == 'process':
+                    try:
+                        if event_data.get('process') and re.search(value, event_data.get('process'), re.IGNORECASE):
+                            return True
+                    except re.error:
+                        continue
+                elif key in ('desc', 'description'):
+                    try:
+                        if event_data.get('description') and re.search(value, event_data.get('description'), re.IGNORECASE):
+                            return True
+                    except re.error:
+                        continue
+        except Exception:
+            pass
+
+        return False
 
     def check_log_availability(self):
         """Check how far back each log has data available"""
@@ -1255,7 +1326,36 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
             prog = getattr(args, 'progress', False)
     except Exception:
         pass
-    searcher.search_event_ids(event_ids, hours_back, output_format, level_filter, level_all, matrix_format, log_filter, source_filter, description_filter, quiet, field_filters, bool_logic, negate, max_events=getattr(args, 'max_events', 0), concurrency=conc, progress=prog)
+    # Load allowlist JSON if provided
+    allowlist_obj = {}
+    try:
+        if getattr(args, 'allowlist', None):
+            with open(args.allowlist, 'r', encoding='utf-8') as f:
+                allowlist_obj = json.load(f)
+    except Exception as e:
+        print(f"Warning: failed to load allowlist file: {e}")
+        allowlist_obj = {}
+
+    searcher.search_event_ids(
+        event_ids,
+        hours_back,
+        output_format,
+        level_filter,
+        level_all,
+        matrix_format,
+        log_filter,
+        source_filter,
+        description_filter,
+        quiet,
+        field_filters,
+        bool_logic,
+        negate,
+        max_events=getattr(args, 'max_events', 0),
+        concurrency=conc,
+        progress=prog,
+        allowlist=allowlist_obj,
+        suppress_rules=getattr(args, 'suppress', None)
+    )
     return searcher.results
 
 
@@ -1396,6 +1496,10 @@ if __name__ == "__main__":
                         help='Number of logs to process in parallel (1 = sequential)')
     parser.add_argument('--progress', action='store_true',
                         help='Show tqdm progress bars per log (requires tqdm)')
+    parser.add_argument('--allowlist', type=str,
+                        help='Path to JSON allowlist file to suppress known/expected activity (event_ids, sources, users, process_regex, description_regex)')
+    parser.add_argument('--suppress', nargs='*',
+                        help='Ad-hoc suppress rules like source:Security-SPP eid:4688 user:DOMAIN\\user process:regex desc:regex')
     # Regex-capable field filters
     parser.add_argument('--user-filter', type=str, help='Regex to match user (e.g., DOMAIN\\user or user)')
     parser.add_argument('--process-filter', type=str, help='Regex to match process/image path')

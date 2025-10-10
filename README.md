@@ -141,6 +141,8 @@ When to use which:
 - `--max-events <int>`: Maximum events to check per log (0 = unlimited). Replaces the older ~1000 internal cap.
 - `--concurrency <int>`: Number of logs to process in parallel.
 - `--progress`: Show per-log progress bars with ETA (requires `tqdm`).
+- `--allowlist <path>`: JSON file listing known/expected activity to suppress.
+- `--suppress <rules>`: Ad-hoc suppression rules (e.g., `source:Security-SPP eid:4688 user:ACME\\alice`).
 
 Rich field filters (regex-capable) and boolean logic:
 - `--user-filter <regex>`: Match on resolved user (from event SID when available), e.g., `ACME\\alice` or `^svc_`.
@@ -463,6 +465,12 @@ python ThreatHunting.py --hours 48 --levels-all Information Warning --process-fi
 
 # Security process creations (Information) with executable match
 python ThreatHunting.py --hours 24 --log-filter Security --levels-all Information --process-filter "\\.exe" --format text --matrix
+
+# Suppress known noisy sources and a specific Event ID
+python ThreatHunting.py --hours 48 --all-events --suppress source:Security-SPP eid:1066 --format text --matrix
+
+# Use an allowlist JSON to suppress expected jobs/services
+python ThreatHunting.py --hours 168 --config config/event_ids.json --allowlist config/allowlist.json --format json
 ```
 
 ### Performance and progress examples
