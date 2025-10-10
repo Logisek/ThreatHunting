@@ -373,6 +373,11 @@ class WindowsEventLogSearcher:
                 'logon_type': enrich.get('logon_type')
             }
 
+            # Assign risk score and reasons
+            score, reasons = self._score_event(event_data)
+            event_data['score'] = score
+            event_data['risk_reasons'] = reasons
+
             # Apply field filters if provided
             if self._matches_field_filters(event_data) and not self._is_suppressed(event_data):
                 self.results.append(event_data)
@@ -417,13 +422,43 @@ class WindowsEventLogSearcher:
         else:  # text format
             self._output_text()
 
+        # After main output, print triage summaries
+        self._output_triage_summaries()
+
+    def _output_triage_summaries(self):
+        """Print Top findings and heatmaps by category/source."""
+        try:
+            if not self.results:
+                return
+            # Top by score
+            top = sorted(self.results, key=lambda e: e.get('score', 0), reverse=True)[:10]
+            print("\nTop findings (by score):")
+            print("-" * 80)
+            for i, e in enumerate(top, 1):
+                print(f"{i:>2}. [{e.get('score',0)}] EID {e['event_id']} {e['log_name']} {e['source']} - {e['timestamp']} :: {e['description'][:80].replace('\n',' ')}")
+
+            # Heatmaps/counts by category and source
+            from collections import Counter
+            cat_counts = Counter([e.get('category','Unknown') for e in self.results])
+            src_counts = Counter([e.get('source','') for e in self.results])
+
+            print("\nCounts by category:")
+            for cat, cnt in cat_counts.most_common(10):
+                print(f"  {cat}: {cnt}")
+
+            print("\nCounts by source:")
+            for src, cnt in src_counts.most_common(10):
+                print(f"  {src}: {cnt}")
+        except Exception as e:
+            print(f"Error generating triage summaries: {e}")
+
     def _output_csv(self):
         """Output results in CSV format"""
         if not self.results:
             return
 
         # CSV header
-        headers = ['timestamp', 'log_name', 'event_id', 'level',
+        headers = ['timestamp', 'log_name', 'event_id', 'level', 'score',
                    'source', 'computer', 'category', 'description']
         print(','.join(headers))
 
@@ -443,6 +478,7 @@ class WindowsEventLogSearcher:
             print(f"    Time: {event['timestamp']}")
             print(f"    Log: {event['log_name']}")
             print(f"    Level: {event['level']}")
+            print(f"    Score: {event.get('score', 0)}")
             print(f"    Source: {event['source']}")
             print(f"    Computer: {event['computer']}")
             print(
@@ -460,6 +496,7 @@ class WindowsEventLogSearcher:
         max_level = max(len(event['level']) for event in self.results)
         max_source = max(len(event['source']) for event in self.results)
         max_event_id = max(len(str(event['event_id'])) for event in self.results)
+        max_score = max(len(str(event.get('score', ''))) for event in self.results)
         
         # Set minimum widths and maximum for description
         time_width = max(19, max_time)  # YYYY-MM-DD HH:MM:SS
@@ -467,10 +504,11 @@ class WindowsEventLogSearcher:
         level_width = max(11, max_level)
         source_width = min(25, max(max_source, 10))  # Limit source width
         event_id_width = max(8, max_event_id)
+        score_width = max(5, max_score, 5)
         desc_width = 50  # Fixed description width
         
         # Print header
-        header = f"{'#':<3} {'Time':<{time_width}} {'Log':<{log_width}} {'Level':<{level_width}} {'Event ID':<{event_id_width}} {'Source':<{source_width}} {'Description':<{desc_width}}"
+        header = f"{'#':<3} {'Time':<{time_width}} {'Log':<{log_width}} {'Level':<{level_width}} {'Score':<{score_width}} {'Event ID':<{event_id_width}} {'Source':<{source_width}} {'Description':<{desc_width}}"
         print(header)
         print("=" * len(header))
         
@@ -483,8 +521,72 @@ class WindowsEventLogSearcher:
             # Truncate source if too long
             source = event['source'][:source_width-3] + '...' if len(event['source']) > source_width else event['source']
             
-            row = f"{i:<3} {event['timestamp']:<{time_width}} {event['log_name']:<{log_width}} {event['level']:<{level_width}} {event['event_id']:<{event_id_width}} {source:<{source_width}} {description:<{desc_width}}"
+            row = f"{i:<3} {event['timestamp']:<{time_width}} {event['log_name']:<{log_width}} {event['level']:<{level_width}} {str(event.get('score', 0)):<{score_width}} {event['event_id']:<{event_id_width}} {source:<{source_width}} {description:<{desc_width}}"
             print(row)
+
+    def _score_event(self, e):
+        """Assign a heuristic risk score and reasons based on event fields.
+        Returns (score:int, reasons:list[str]).
+        """
+        score = 0
+        reasons = []
+        eid = int(e.get('event_id', 0) or 0)
+        level = (e.get('level') or '').lower()
+        category = e.get('category') or ''
+        process = (e.get('process') or '').lower()
+        parent = (e.get('parent') or '').lower()
+        source = (e.get('source') or '').lower()
+        user = (e.get('user') or '')
+
+        # Sensitive events
+        high_signal_eids = {1102, 4698, 7045, 4688, 4732, 4728, 4756, 4776}
+        if eid in high_signal_eids:
+            score += 30
+            reasons.append(f"Sensitive EventID {eid}")
+
+        # Privileged context
+        if eid == 4672 or 'special privileges' in (e.get('description') or '').lower():
+            score += 25
+            reasons.append("Privileged logon context")
+
+        # Category weights
+        if 'critical_smoking_gun_indicators' in category:
+            score += 30
+            reasons.append("Smoking-gun category")
+        elif 'credential_access' in category or 'privilege_escalation' in category:
+            score += 20
+            reasons.append("Cred/priv escalation category")
+        elif 'persistence' in category:
+            score += 15
+            reasons.append("Persistence category")
+
+        # LOLBins and suspicious tooling
+        lolbins = ['powershell.exe', 'cmd.exe', 'rundll32.exe', 'regsvr32.exe', 'mshta.exe', 'wscript.exe', 'cscript.exe', 'certutil.exe', 'bitsadmin.exe', 'schtasks.exe', 'psexec', 'wmic.exe']
+        if any(x in process for x in lolbins):
+            score += 20
+            reasons.append("Suspicious LOLBin process")
+        if any(x in parent for x in ['outlook.exe', 'winword.exe', 'excel.exe', 'powerpnt.exe']):
+            score += 10
+            reasons.append("Office as parent")
+
+        # Level adjustments
+        if level in ('error', 'critical'):
+            score += 5
+            reasons.append("High level severity")
+
+        # Source patterns
+        if 'security' in source and eid in {4624, 4648, 4688, 4698, 7045, 1102}:
+            score += 5
+
+        # User context
+        if user and (user.endswith('\\administrator') or user.lower().endswith('\\admins')):
+            score += 5
+            reasons.append("Admin user context")
+
+        # Clamp
+        if score > 100:
+            score = 100
+        return score, reasons
 
     def _extract_enrichments(self, description):
         """Extract common fields from description using heuristics/regex."""

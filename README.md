@@ -8,6 +8,7 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 - Search by curated event IDs grouped into hunting categories
 - Filter by time window, level, log type, source, and description
 - Output in JSON, CSV, human-readable text, matrix, or timeline (JSONL/CSV) with optional sessionization
+- Risk scoring for each event + triage summaries (Top findings, category/source heatmaps)
 - Quick checks for log availability coverage and retention settings
 - Configure retention (PowerShell, registry, or direct API)
 - Open Event Viewer and Windows log directories
@@ -143,6 +144,10 @@ When to use which:
 - `--progress`: Show per-log progress bars with ETA (requires `tqdm`).
 - `--allowlist <path>`: JSON file listing known/expected activity to suppress.
 - `--suppress <rules>`: Ad-hoc suppression rules (e.g., `source:Security-SPP eid:4688 user:ACME\\alice`).
+
+Scoring and triage output:
+- Every result includes `score` (0–100) and `risk_reasons` in JSON; text/matrix/CSV include `score`.
+- After results, a triage summary prints Top findings (by score) and counts by category/source.
 
 Rich field filters (regex-capable) and boolean logic:
 - `--user-filter <regex>`: Match on resolved user (from event SID when available), e.g., `ACME\\alice` or `^svc_`.
@@ -471,6 +476,9 @@ python ThreatHunting.py --hours 48 --all-events --suppress source:Security-SPP e
 
 # Use an allowlist JSON to suppress expected jobs/services
 python ThreatHunting.py --hours 168 --config config/event_ids.json --allowlist config/allowlist.json --format json
+
+# Concurrency + progress with scoring in matrix (score column visible)
+python ThreatHunting.py --hours 72 --all-events --max-events 0 --process-filter "powershell\\.exe|cmd\\.exe" --concurrency 4 --progress --format text --matrix
 ```
 
 ### Performance and progress examples
