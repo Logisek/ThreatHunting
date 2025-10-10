@@ -386,3 +386,104 @@ python ThreatHunting.py --config custom_events.json --log-filter Application --l
 ## License
 
 See `LICENSE` in this repository.
+
+---
+
+## Event ID Reference Matrix
+
+Below is a practical reference for the unique event IDs used across the included JSON configs. Where the repository references very large ranges (e.g., hundreds of Security audit IDs), they are grouped for readability. Prefer the Microsoft official documentation for authoritative, version-specific semantics.
+
+### Windows Security Log — Authentication and Logon
+
+| Event ID | What it is | Why hunt for it |
+|---|---|---|
+| 4624 | An account was successfully logged on | Baseline logons, pivot by LogonType for network/RDP/service logons, lateral movement |
+| 4625 | An account failed to log on | Password spraying/brute force indicators, failed lateral movement |
+| 4634 | An account was logged off | Session lifecycle correlation with 4624/4648 |
+| 4648 | A logon was attempted using explicit credentials | Pass-the-Hash/Ticket usage, remote exec tools (PsExec/WMI) |
+| 4672 | Special privileges assigned to new logon | Admin-equivalent context; privilege escalation and high-value sessions |
+| 4673–4674 | Sensitive privilege use / Privileged service called | Detection of privilege API usage by processes |
+| 4697 | A service was installed in the system | Persistence, privilege escalation, remote service creation |
+| 4698 | A scheduled task was created | Persistence, living-off-the-land tasking |
+| 4732/4728/4756 | Member added to local/global/universal group | Privilege escalation via group membership changes |
+| 4768/4769/4771 | Kerberos TGT/TGS request/failure | Kerberoasting, clock skew, KDC issues, brute forcing |
+| 4772/4773/4774/4775 | Kerberos auth anomalies | Ticket renewals/failures, policy issues, potential abuse |
+| 4776 | NTLM authentication | Legacy auth, relay risk, brute force indicators |
+| 1102 | The audit log was cleared | High-signal defense evasion |
+
+### Windows System/Application — Services, Tasks, Registry, Shares
+
+| Event ID | What it is | Why hunt for it |
+|---|---|---|
+| 7040 | Service start type changed | Persistence via autorun service changes |
+| 7045 | A service was installed (System) | Persistence/remote execution, tool staging |
+| 106/140 (Task Scheduler) | Task created/updated | Persistence and scheduled execution |
+| 12/13/14 (Registry) | Registry value/key added/modified | Autoruns, tampering with security controls |
+| 4688 | Process creation | Parent-child anomalies, LOLBins, malware invocations |
+| 4689 | Process termination | Correlate lifetimes, short-lived suspicious processes |
+| 5140/5142/5145 | SMB share accessed/created/object checked | Lateral movement, data staging/exfil over SMB |
+| 4778/4779 | Session reconnect/disconnect | RDP/interactive session tracking |
+
+### PowerShell and Script Execution
+
+| Event ID | What it is | Why hunt for it |
+|---|---|---|
+| 4100 | PowerShell engine lifecycle | Baseline session/activity presence |
+| 4103 | PowerShell module logging | Cmdlet/module usage; detect living-off-the-land |
+| 4104 | PowerShell script block logging | High-signal malicious script content (obfuscation, download cradle) |
+| 53504/53506/53507 | PowerShell operational (newer channels) | Deep telemetry for script operations (if enabled) |
+
+### Windows Filtering Platform (Network)
+
+| Event ID | What it is | Why hunt for it |
+|---|---|---|
+| 5152/5153 | Packet blocked by filter | Host-based firewall blocks; scanning, failed C2 |
+| 5156 | Connection allowed | Baseline outbound/inbound; unusual destinations/ports |
+| 5157 | Connection blocked | Egress control efficacy; policy tamper attempts |
+| 5158/5159/5160/5161 | Resource assignments and state | Low-level flow diagnostics; advanced network hunting |
+
+### Windows Defender (Microsoft Defender AV)
+
+| Event ID | What it is | Why hunt for it |
+|---|---|---|
+| 1116 | Malware detected | Direct detection signal; pivot to related process/file |
+| 1117 | Remediation action taken | Cleanup actions; verify success and residual indicators |
+
+### RDP and Remote Access (Terminal Services)
+
+| Event ID | What it is | Why hunt for it |
+|---|---|---|
+| 1149 | Successful RDP logon (TS-Gateway/TermServ) | Trace interactive access, brute force success |
+| 21/24/25 | Session connect/disconnect/reconnect | Account usage patterns, suspicious timing |
+
+### Sysmon (if deployed)
+
+| Event ID | What it is | Why hunt for it |
+|---|---|---|
+| 1 | Process creation | Parent-child chains, command-lines, LOLBins |
+| 2 | File creation time changed | Timestomping detection |
+| 3 | Network connection | Outbound C2, lateral movement, rare destinations |
+| 4 | Sysmon service state changed | Tamper and defense evasion |
+| 5 | Process terminated | Lifecycle correlation with Event ID 1 |
+| 6 | Driver loaded | Kernel-mode implants, unsigned drivers |
+| 7 | Image loaded | Malicious DLLs, injection indicators |
+| 8 | CreateRemoteThread | Code injection between processes |
+| 9 | Raw disk access | Ransomware behavior, low-level tampering |
+| 10 | Process access (e.g., lsass.exe) | Credential theft tooling (Mimikatz, etc.) |
+| 11 | File created | Payload drops, staging |
+| 12/13/14 | Registry add/delete/set | Autoruns and tampering |
+| 15 | File stream created | ADS usage for stealth |
+| 16 | Sysmon configuration change | Tamper and logging gaps |
+| 17/18 | Pipe created/connected | Lateral tools, inter-process comms |
+| 19/20/21/22/23/24/25 | WMI event activity | Remote exec, persistence via WMI |
+
+### Other and Category Placeholders
+
+| Event ID | What it is | Why hunt for it |
+|---|---|---|
+| 400/403/600 | Provider-specific placeholders used in configs | Treat as hints to inspect provider channels relevant to execution/remoting |
+| 1000–1050 (Application) | Common application crash/errors | Unusual instability tied to attack tooling |
+| 6005/6006/6008/6009 (System) | Event log service start/stop; unexpected shutdown; OS version | Establish uptime and suspicious reboots |
+| 6011–6050 (System) | System telemetry sequence | Operational context; correlate with attack timelines |
+| 4673–5000 (Security, broad range) | Detailed privilege/use-of-rights and audit events | Exhaustive reviews during deep IR; pivot selectively by activity
+
