@@ -6,13 +6,16 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 
 ### Key Features
 - Search by curated event IDs grouped into hunting categories
-- Filter by time window, level, log type, source, and description
-- Output in JSON, CSV, human-readable text, matrix, or timeline (JSONL/CSV) with optional sessionization
+- Filter by time window, level, log type, source, description, and rich regex field filters (user/process/parent/ip/port/logon-type) with AND/OR/NOT
+- Output in JSON, JSONL (NDJSON), CSV, human-readable text, or matrix view; optional timeline output with sessionization
+- Concurrency and progress bars for faster multi-log scanning; unlimited or capped events with --max-events
 - Risk scoring for each event + triage summaries (Top findings, category/source heatmaps)
+- Tamper and health checks (log clears, policy changes, service stops, time skew, large gaps)
+- Config management: single/multiple configs, schema validation, merge diffs, and named presets
+- Sinks and integrations: HTTP webhook and Splunk HEC
 - Quick checks for log availability coverage and retention settings
 - Configure retention (PowerShell, registry, or direct API)
 - Open Event Viewer and Windows log directories
-- Load custom event sets from JSON
 - UAC-aware admin check, optional auto-elevation, and warning suppression
 
 ---
@@ -21,12 +24,22 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 
 - Windows 10/11 or Windows Server with Event Logs enabled
 - Python 3.8+
-- Dependencies: `pywin32`
+- Dependencies:
+  - `pywin32` (Windows Event Log + Win32 APIs)
+  - `tqdm` (optional, for progress bars)
+  - `requests` (optional, for webhook and Splunk HEC sinks)
+  - `colorama` (optional, for colorized text output)
 
-Install dependencies:
+Quick install:
 
 ```bash
-pip install pywin32
+pip install -r requirements.txt
+```
+
+Or install manually:
+
+```bash
+pip install pywin32 tqdm requests colorama
 ```
 
 Run from project directory:
