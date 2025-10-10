@@ -481,6 +481,8 @@ class WindowsEventLogSearcher:
 
         # After main output, print triage summaries
         self._output_triage_summaries()
+        # Tamper and health checks
+        self._output_tamper_health_checks()
 
     def send_sinks(self, webhook_url=None, hec_url=None, hec_token=None, batch_size=500, use_jsonl=False):
         """Send results to webhook or Splunk HEC endpoints."""
@@ -540,6 +542,84 @@ class WindowsEventLogSearcher:
                 print(f"  {src}: {cnt}")
         except Exception as e:
             print(f"Error generating triage summaries: {e}")
+
+    def _output_tamper_health_checks(self):
+        """Detect signs of logging tamper or health issues and print a brief report."""
+        try:
+            if not self.results:
+                return
+            from collections import defaultdict
+            now = datetime.now()
+            issues = []
+
+            # Counters
+            by_eid = defaultdict(int)
+            by_source = defaultdict(int)
+            by_log = defaultdict(list)
+            future_events = 0
+
+            for e in self.results:
+                eid = int(e.get('event_id', 0) or 0)
+                src = e.get('source', '') or ''
+                by_eid[eid] += 1
+                by_source[src] += 1
+                by_log[e.get('log_name','')].append(e)
+
+                # Future timestamp (>5 min ahead)
+                try:
+                    ts = datetime.strptime(e.get('timestamp',''), '%Y-%m-%d %H:%M:%S')
+                    if ts - now > timedelta(minutes=5):
+                        future_events += 1
+                except Exception:
+                    pass
+
+            # Known tamper/health indicators
+            if by_eid.get(1102, 0):
+                issues.append(f"Security log cleared events (1102): {by_eid.get(1102)}")
+            if by_eid.get(1101, 0):
+                issues.append(f"Audit events dropped (1101): {by_eid.get(1101)}")
+            if by_eid.get(1100, 0):
+                issues.append(f"Event logging service shutdown (1100): {by_eid.get(1100)}")
+            if by_eid.get(4719, 0):
+                issues.append(f"System audit policy changed (4719): {by_eid.get(4719)}")
+
+            # Service Control Manager indicates Event Log service stopped (7036 with stopped state)
+            scm_stops = 0
+            for e in self.results:
+                if (e.get('source','') == 'Service Control Manager' and str(e.get('event_id')) == '7036' and 'stopped' in (e.get('description','').lower())):
+                    scm_stops += 1
+            if scm_stops:
+                issues.append(f"Windows Event Log service stopped state (7036): {scm_stops}")
+
+            # Time skew
+            if future_events:
+                issues.append(f"Events in the future (>5m): {future_events}")
+
+            # Gap analysis (>24h) per log
+            for log, items in by_log.items():
+                try:
+                    ordered = sorted(items, key=lambda x: datetime.strptime(x.get('timestamp',''), '%Y-%m-%d %H:%M:%S'))
+                    max_gap = timedelta(0)
+                    for a, b in zip(ordered, ordered[1:]):
+                        ta = datetime.strptime(a.get('timestamp',''), '%Y-%m-%d %H:%M:%S')
+                        tb = datetime.strptime(b.get('timestamp',''), '%Y-%m-%d %H:%M:%S')
+                        gap = tb - ta
+                        if gap > max_gap:
+                            max_gap = gap
+                    if max_gap >= timedelta(hours=24):
+                        issues.append(f"Large gap in {log}: {max_gap}")
+                except Exception:
+                    pass
+
+            if issues:
+                print("\nTamper/Health checks:")
+                print("-" * 80)
+                for msg in issues:
+                    print(f"  - {msg}")
+            else:
+                print("\nTamper/Health checks: No obvious issues detected.")
+        except Exception as e:
+            print(f"Error in tamper/health checks: {e}")
 
     def _output_csv(self):
         """Output results in CSV format"""
