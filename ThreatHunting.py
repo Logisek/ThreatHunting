@@ -13,6 +13,7 @@ import sys
 import os
 from contextlib import redirect_stdout
 import ctypes
+import re
 
 
 def load_event_ids_from_json(json_file_path):
@@ -272,6 +273,18 @@ class WindowsEventLogSearcher:
             if self.description_filter and self.description_filter.lower() not in description.lower():
                 return
 
+            # Try to resolve user from event SID if available
+            user_name = None
+            try:
+                if hasattr(event, 'Sid') and event.Sid:
+                    name, domain, _ = win32security.LookupAccountSid(None, event.Sid)
+                    if domain:
+                        user_name = f"{domain}\\{name}"
+                    else:
+                        user_name = name
+            except Exception:
+                user_name = None
+
             event_data = {
                 'timestamp': event.TimeGenerated.strftime('%Y-%m-%d %H:%M:%S'),
                 'log_name': log_name,
@@ -279,6 +292,7 @@ class WindowsEventLogSearcher:
                 'level': event_level,
                 'source': event.SourceName,
                 'computer': event.ComputerName,
+                'user': user_name,
                 'description': description,
                 'category': self._get_event_category(event.EventID)
             }
@@ -1080,6 +1094,68 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
         event_ids = ALL_EVENT_IDS
 
     searcher.search_event_ids(event_ids, hours_back, output_format, level_filter, level_all, matrix_format, log_filter, source_filter, description_filter, quiet)
+    return searcher.results
+
+
+def _extract_logon_id(description):
+    """Extract Logon ID (hex) from event description if present."""
+    if not description:
+        return None
+    try:
+        match = re.search(r"Logon ID:\s*(0x[0-9A-Fa-f]+)", description)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def output_timeline(events, fmt='jsonl', sessionize='none'):
+    """Output a chronological timeline in JSONL or CSV with optional sessionization.
+
+    Args:
+        events (list): list of event dicts as produced by searcher
+        fmt (str): 'jsonl' or 'csv'
+        sessionize (str): 'none', 'user', 'host', 'logon', or 'log'
+    """
+    if not events:
+        print("No matching events found.")
+        return
+
+    # Sort chronologically
+    def parse_ts(e):
+        try:
+            return datetime.strptime(e.get('timestamp', ''), '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return datetime.min
+
+    sorted_events = sorted(events, key=parse_ts)
+
+    # Derive session key if requested
+    for e in sorted_events:
+        session = None
+        if sessionize == 'user':
+            session = e.get('user')
+        elif sessionize == 'host':
+            session = e.get('computer')
+        elif sessionize == 'logon':
+            session = _extract_logon_id(e.get('description'))
+        elif sessionize == 'log':
+            session = e.get('log_name')
+        e['session'] = session
+
+    if fmt == 'jsonl':
+        for e in sorted_events:
+            print(json.dumps(e, default=str))
+    else:  # csv
+        headers = ['timestamp', 'session', 'user', 'computer', 'log_name', 'event_id', 'level', 'source', 'category', 'description']
+        print(','.join(headers))
+        for e in sorted_events:
+            row = []
+            for h in headers:
+                v = str(e.get(h, '')).replace(',', ';').replace('\n', ' ').replace('\r', ' ')
+                row.append(f'"{v}"')
+            print(','.join(row))
 
 
 if __name__ == "__main__":
@@ -1141,6 +1217,10 @@ if __name__ == "__main__":
                         help='Suppress non-elevated admin warning')
     parser.add_argument('--elevate', action='store_true',
                         help='If not elevated, relaunch this script with Administrator privileges')
+    parser.add_argument('--timeline', choices=['jsonl', 'csv'],
+                        help='Output a chronological timeline (jsonl or csv) instead of standard formats')
+    parser.add_argument('--sessionize', choices=['none', 'user', 'host', 'logon', 'log'], default='none',
+                        help='Group timeline events by session key: user, host, logon (Logon ID), or log')
 
     args = parser.parse_args()
 
@@ -1320,7 +1400,22 @@ if __name__ == "__main__":
                 print(f"Error writing to output file '{args.output}': {e}")
                 sys.exit(1)
         else:
-            run_search(quiet=False)
+            if args.timeline:
+                results = search_threat_indicators(
+                    hours_back=args.hours,
+                    output_format=args.format,
+                    specific_categories=args.categories,
+                    level_filter=level_filter,
+                    level_all=level_all,
+                    matrix_format=args.matrix,
+                    log_filter=args.log_filter,
+                    source_filter=args.source_filter,
+                    description_filter=args.description_filter,
+                    quiet=True
+                )
+                output_timeline(results, fmt=args.timeline, sessionize=args.sessionize)
+            else:
+                run_search(quiet=False)
     except KeyboardInterrupt:
         print("\nSearch interrupted by user.")
     except Exception as e:
