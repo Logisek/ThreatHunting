@@ -7,7 +7,7 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 ### Key Features
 - Search by curated event IDs grouped into hunting categories
 - Filter by time window, level, log type, source, and description
-- Output in JSON, CSV, human-readable text, or matrix view
+- Output in JSON, CSV, human-readable text, matrix, or timeline (JSONL/CSV) with optional sessionization
 - Quick checks for log availability coverage and retention settings
 - Configure retention (PowerShell, registry, or direct API)
 - Open Event Viewer and Windows log directories
@@ -135,6 +135,10 @@ When to use which:
 - `--log-filter {Application,Security,Setup,System}`: Restrict search to a single log.
 - `--source-filter <string>`: Case-insensitive contains-match on event source.
 - `--description-filter <string>`: Case-insensitive contains-match on event description.
+
+Timeline export and sessionization:
+- `--timeline {jsonl,csv}`: Output a chronological timeline in JSON Lines (one JSON object per line) or CSV format.
+- `--sessionize {none,user,host,logon,log}`: Add a derived `session` key to each event and optionally group by user (from event SID), host, logon ID (parsed from description), or log.
 
 Elevation and warnings:
 - `--no-admin-warning`: Suppress the non-elevated warning.
@@ -389,6 +393,22 @@ python ThreatHunting.py --categories lateral_movement_and_remote_access --log-fi
 
 # 5) Custom event set, Application log, warnings in last 7 days
 python ThreatHunting.py --config custom_events.json --log-filter Application --level Warning --hours 168 --matrix
+```
+
+### Timeline export and sessionization examples
+
+```bash
+# Simple JSONL timeline for last 12 hours
+python ThreatHunting.py --hours 12 --timeline jsonl
+
+# CSV timeline sessionized by user (derived from event SID when available)
+python ThreatHunting.py --hours 24 --timeline csv --sessionize user > timeline.csv
+
+# Focus on credential access/escalation and sessionize by Logon ID parsed from descriptions
+python ThreatHunting.py --categories credential_access_and_privilege_escalation --hours 24 --timeline jsonl --sessionize logon
+
+# Security log, all Error events, CSV timeline grouped by host
+python ThreatHunting.py --log-filter Security --level-all Error --hours 24 --timeline csv --sessionize host > sec_errors_timeline.csv
 ```
 
 ---
