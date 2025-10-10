@@ -138,6 +138,9 @@ When to use which:
 - `--source-filter <string>`: Case-insensitive contains-match on event source.
 - `--description-filter <string>`: Case-insensitive contains-match on event description.
 - `--all-events`: Search ALL events, ignoring Event IDs/categories and level filters. Combine with rich filters.
+- `--max-events <int>`: Maximum events to check per log (0 = unlimited). Replaces the older ~1000 internal cap.
+- `--concurrency <int>`: Number of logs to process in parallel.
+- `--progress`: Show per-log progress bars with ETA (requires `tqdm`).
 
 Rich field filters (regex-capable) and boolean logic:
 - `--user-filter <regex>`: Match on resolved user (from event SID when available), e.g., `ACME\\alice` or `^svc_`.
@@ -460,6 +463,16 @@ python ThreatHunting.py --hours 48 --levels-all Information Warning --process-fi
 
 # Security process creations (Information) with executable match
 python ThreatHunting.py --hours 24 --log-filter Security --levels-all Information --process-filter "\\.exe" --format text --matrix
+```
+
+### Performance and progress examples
+
+```bash
+# Unlimited scan with 4 workers and progress bars (requires tqdm)
+python ThreatHunting.py --hours 72 --all-events --max-events 0 --process-filter "explorer\\.exe" --concurrency 4 --progress --format text --matrix
+
+# Cap at 50k per-log with levels and JSON output
+python ThreatHunting.py --hours 168 --levels-all Information Warning --max-events 50000 --concurrency 4 --progress --format json
 ```
 
 ---

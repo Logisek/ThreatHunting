@@ -14,6 +14,11 @@ import os
 from contextlib import redirect_stdout
 import ctypes
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+try:
+    from tqdm import tqdm
+except Exception:
+    tqdm = None
 
 
 def load_event_ids_from_json(json_file_path):
@@ -132,7 +137,7 @@ class WindowsEventLogSearcher:
         self.logs = ['Application', 'Security', 'Setup', 'System']
         self.results = []
 
-    def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False):
+    def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, concurrency=1, progress=False):
         """
         Search for specific Event IDs in Windows Event Logs
 
@@ -171,6 +176,7 @@ class WindowsEventLogSearcher:
         self.field_filters = field_filters or {}
         self.bool_logic = bool_logic
         self.negate = negate
+        self.max_events = max_events if isinstance(max_events, int) and max_events >= 0 else 0
 
         # Apply log filter to logs list
         if log_filter:
@@ -178,17 +184,51 @@ class WindowsEventLogSearcher:
             if not quiet:
                 print(f"Log filter: {log_filter}")
 
-        for log_name in self.logs:
+        # Concurrency and progress bars
+        use_progress = (progress and tqdm is not None and not quiet)
+        results_lists = []
+
+        def run_one(log_name, position=0):
             try:
-                if not quiet:
+                if not quiet and not use_progress:
                     print(f"Searching {log_name} log...")
-                self._search_log(log_name, event_ids, start_time)
+                # Pre-fetch count for progress bar total
+                total = 0
+                try:
+                    total = win32evtlog.GetNumberOfEventLogRecords(
+                        win32evtlog.OpenEventLog(None, log_name))
+                except Exception:
+                    pass
+                pbar = None
+                if use_progress:
+                    pbar = tqdm(total=total, desc=f"{log_name}", position=position, leave=False)
+                lst = self._search_log(log_name, event_ids, start_time, pbar)
+                if pbar is not None:
+                    pbar.close()
+                return lst
             except Exception as e:
                 print(f"Error accessing {log_name} log: {e}")
+                return []
+
+        if max(1, concurrency) > 1 and len(self.logs) > 1:
+            with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
+                future_to_log = {}
+                for idx, log_name in enumerate(self.logs):
+                    future = executor.submit(run_one, log_name, idx)
+                    future_to_log[future] = log_name
+                for future in as_completed(future_to_log):
+                    results_lists.append(future.result())
+        else:
+            for idx, log_name in enumerate(self.logs):
+                results_lists.append(run_one(log_name, idx))
+
+        # Merge results
+        for lst in results_lists:
+            self.results.extend(lst)
 
         self._output_results(output_format)
 
-    def _search_log(self, log_name, event_ids, start_time):
+    def _search_log(self, log_name, event_ids, start_time, pbar=None):
         """Search a specific event log for the given Event IDs"""
         try:
             # Try to enable security privilege if accessing Security log
@@ -221,18 +261,25 @@ class WindowsEventLogSearcher:
                         # Check if event is within our time range
                         event_time = event.TimeGenerated
                         if event_time < start_time:
-                            # If we've gone too far back, we can break
-                            if events_checked > 1000:  # Limit to prevent infinite loops
-                                break
+                            # We've gone past our time window; stop processing this batch item
                             continue
                         
                         # Check if this is one of our target Event IDs (or if we're in level_all mode)
                         if self.level_all or event.EventID in event_ids:
                             self._process_event(event, log_name)
                             matches_found += 1
+                        # Progress hint
+                        if pbar is not None:
+                            pbar.update(1)
+                        elif not self.quiet and events_checked % 200 == 0:
+                            target = str(self.max_events) if self.max_events else '∞'
+                            print(f"  Progress: checked {events_checked}/{target} events in {log_name}...")
+                        # Respect max events limit
+                        if self.max_events and events_checked >= self.max_events:
+                            break
                     
-                    # If we've checked enough events or gone too far back, break
-                    if events_checked > 1000:
+                    # If we've checked enough events, break
+                    if self.max_events and events_checked >= self.max_events:
                         break
                         
                 except Exception as e:
@@ -241,9 +288,18 @@ class WindowsEventLogSearcher:
                     else:
                         raise e
             
-            if not self.quiet:
+            if pbar is not None:
+                # fill remaining if total known and not exceeded
+                try:
+                    remaining = (pbar.total or 0) - (pbar.n or 0)
+                    if remaining and remaining > 0:
+                        pbar.update(remaining)
+                except Exception:
+                    pass
+            if not self.quiet and not pbar:
                 print(f"  Checked {events_checked} events in {log_name} log, found {matches_found} matches")
             win32evtlog.CloseEventLog(hand)
+            return self.results if pbar is None else []
             
         except Exception as e:
             if "A required privilege is not held by the client" in str(e):
@@ -253,6 +309,7 @@ class WindowsEventLogSearcher:
                 print(f"  {log_name} log: Access denied - insufficient privileges")
             else:
                 print(f"Error reading {log_name} log: {e}")
+            return []
 
     def _process_event(self, event, log_name):
         """Process and store event data"""
@@ -1189,7 +1246,16 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
     if getattr(sys.modules.get(__name__), 'args', None) and getattr(args, 'all_events', False):
         event_ids = []
 
-    searcher.search_event_ids(event_ids, hours_back, output_format, level_filter, level_all, matrix_format, log_filter, source_filter, description_filter, quiet, field_filters, bool_logic, negate)
+    # Forward global args if present for concurrency/progress
+    conc = 1
+    prog = False
+    try:
+        if 'args' in globals():
+            conc = getattr(args, 'concurrency', 1)
+            prog = getattr(args, 'progress', False)
+    except Exception:
+        pass
+    searcher.search_event_ids(event_ids, hours_back, output_format, level_filter, level_all, matrix_format, log_filter, source_filter, description_filter, quiet, field_filters, bool_logic, negate, max_events=getattr(args, 'max_events', 0), concurrency=conc, progress=prog)
     return searcher.results
 
 
@@ -1324,6 +1390,12 @@ if __name__ == "__main__":
                         help='Group timeline events by session key: user, host, logon (Logon ID), or log')
     parser.add_argument('--all-events', action='store_true',
                         help='Search ALL events (ignore Event IDs/categories and level filters)')
+    parser.add_argument('--max-events', type=int, default=0,
+                        help='Maximum number of events to check per log (0 = no limit). Replaces previous ~1000 cap')
+    parser.add_argument('--concurrency', type=int, default=1,
+                        help='Number of logs to process in parallel (1 = sequential)')
+    parser.add_argument('--progress', action='store_true',
+                        help='Show tqdm progress bars per log (requires tqdm)')
     # Regex-capable field filters
     parser.add_argument('--user-filter', type=str, help='Regex to match user (e.g., DOMAIN\\user or user)')
     parser.add_argument('--process-filter', type=str, help='Regex to match process/image path')
@@ -1541,9 +1613,12 @@ if __name__ == "__main__":
                     explicit_event_ids=args.event_ids,
                     quiet=True
                 )
+                # override per-call max_events by setting on searcher before timeline output
+                # (timeline does not requery; this maintains behavior)
                 output_timeline(results, fmt=args.timeline, sessionize=args.sessionize)
             else:
-                results = search_threat_indicators(
+                # Single run with printing enabled; progress bars are handled internally
+                search_threat_indicators(
                     hours_back=args.hours,
                     output_format=args.format,
                     specific_categories=args.categories,
