@@ -132,7 +132,7 @@ class WindowsEventLogSearcher:
         self.logs = ['Application', 'Security', 'Setup', 'System']
         self.results = []
 
-    def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False):
+    def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False):
         """
         Search for specific Event IDs in Windows Event Logs
 
@@ -168,6 +168,9 @@ class WindowsEventLogSearcher:
         self.source_filter = source_filter
         self.description_filter = description_filter
         self.quiet = quiet
+        self.field_filters = field_filters or {}
+        self.bool_logic = bool_logic
+        self.negate = negate
 
         # Apply log filter to logs list
         if log_filter:
@@ -258,7 +261,13 @@ class WindowsEventLogSearcher:
             event_level = self._get_event_level(event.EventType)
             
             # Apply level filter if specified
-            if self.level_filter and event_level != self.level_filter:
+            if self.level_filter:
+                if isinstance(self.level_filter, (set, list, tuple)):
+                    if event_level not in self.level_filter:
+                        return
+                else:
+                    if event_level != self.level_filter:
+                        return
                 return
             
             # Get event description
@@ -285,6 +294,9 @@ class WindowsEventLogSearcher:
             except Exception:
                 user_name = None
 
+            # Enrichments parsed from description
+            enrich = self._extract_enrichments(description)
+
             event_data = {
                 'timestamp': event.TimeGenerated.strftime('%Y-%m-%d %H:%M:%S'),
                 'log_name': log_name,
@@ -294,10 +306,17 @@ class WindowsEventLogSearcher:
                 'computer': event.ComputerName,
                 'user': user_name,
                 'description': description,
-                'category': self._get_event_category(event.EventID)
+                'category': self._get_event_category(event.EventID),
+                'process': enrich.get('process'),
+                'parent': enrich.get('parent'),
+                'ip': enrich.get('ip'),
+                'port': enrich.get('port'),
+                'logon_type': enrich.get('logon_type')
             }
 
-            self.results.append(event_data)
+            # Apply field filters if provided
+            if self._matches_field_filters(event_data):
+                self.results.append(event_data)
 
         except Exception as e:
             print(f"Error processing event {event.EventID}: {e}")
@@ -407,6 +426,72 @@ class WindowsEventLogSearcher:
             
             row = f"{i:<3} {event['timestamp']:<{time_width}} {event['log_name']:<{log_width}} {event['level']:<{level_width}} {event['event_id']:<{event_id_width}} {source:<{source_width}} {description:<{desc_width}}"
             print(row)
+
+    def _extract_enrichments(self, description):
+        """Extract common fields from description using heuristics/regex."""
+        fields = {}
+        if not description:
+            return fields
+        try:
+            # Process/Image
+            m = re.search(r"New Process Name:\s*(.+)", description)
+            if not m:
+                m = re.search(r"Process Name:\s*(.+)", description)
+            if not m:
+                m = re.search(r"Image:\s*(.+)", description)
+            if m:
+                fields['process'] = m.group(1).strip()
+
+            # Parent
+            m = re.search(r"Parent Process Name:\s*(.+)", description)
+            if not m:
+                m = re.search(r"Parent Image:\s*(.+)", description)
+            if m:
+                fields['parent'] = m.group(1).strip()
+
+            # Logon Type
+            m = re.search(r"Logon Type:\s*(\d+)", description)
+            if m:
+                fields['logon_type'] = m.group(1)
+
+            # IP (IPv4/IPv6) - Source Network Address
+            m = re.search(r"Source Network Address:\s*([0-9a-fA-F:\.]+)", description)
+            if m:
+                fields['ip'] = m.group(1).strip()
+
+            # Port
+            m = re.search(r"Source Port:\s*(\d+)", description)
+            if m:
+                fields['port'] = m.group(1)
+        except Exception:
+            pass
+        return fields
+
+    def _matches_field_filters(self, event_data):
+        """Evaluate regex-based field filters with AND/OR and optional negation."""
+        if not self.field_filters:
+            return True
+        results = []
+        for key, pattern in self.field_filters.items():
+            if not pattern:
+                # Skip unset/empty patterns
+                continue
+            try:
+                value = event_data.get(key)
+                if value is None:
+                    results.append(False)
+                    continue
+                if re.search(pattern, str(value), flags=re.IGNORECASE):
+                    results.append(True)
+                else:
+                    results.append(False)
+            except re.error:
+                results.append(False)
+        # If no valid patterns were supplied, treat as pass-through
+        if not results:
+            return True
+        match = all(results) if self.bool_logic == 'and' else any(results)
+        return (not match) if self.negate else match
 
     def check_log_availability(self):
         """Check how far back each log has data available"""
@@ -1062,7 +1147,7 @@ if ($successCount -gt 0) {{
             return False
 
 
-def search_threat_indicators(hours_back=24, output_format='text', specific_categories=None, level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False):
+def search_threat_indicators(hours_back=24, output_format='text', specific_categories=None, level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, all_events=False, explicit_event_ids=None):
     """
     Search for threat hunting Event IDs in Windows logs
 
@@ -1079,9 +1164,16 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
     """
     searcher = WindowsEventLogSearcher()
 
-    if level_all:
+    if all_events:
+        event_ids = []
+        level_all = True
+        level_filter = None
+    elif level_all:
         # In level_all mode, we don't need specific Event IDs
         event_ids = []
+    elif explicit_event_ids:
+        # User-specified explicit event IDs
+        event_ids = list(set(int(e) for e in explicit_event_ids))
     elif specific_categories:
         # Search only specific categories
         event_ids = []
@@ -1093,7 +1185,11 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
         # Search all Event IDs
         event_ids = ALL_EVENT_IDS
 
-    searcher.search_event_ids(event_ids, hours_back, output_format, level_filter, level_all, matrix_format, log_filter, source_filter, description_filter, quiet)
+    # If --all-events, ignore event_ids and level filtering later
+    if getattr(sys.modules.get(__name__), 'args', None) and getattr(args, 'all_events', False):
+        event_ids = []
+
+    searcher.search_event_ids(event_ids, hours_back, output_format, level_filter, level_all, matrix_format, log_filter, source_filter, description_filter, quiet, field_filters, bool_logic, negate)
     return searcher.results
 
 
@@ -1193,6 +1289,8 @@ if __name__ == "__main__":
                         help='Open both Event Viewer and Log directory')
     parser.add_argument(
         '--config', type=str, help='Path to JSON configuration file with custom Event IDs')
+    parser.add_argument('--event-ids', nargs='+', type=int,
+                        help='Explicit Event ID list to search (overrides categories unless --all-events is used)')
     parser.add_argument('-o', '--output', type=str,
                         help='Write results to file (UTF-8). Incompatible with --matrix + non-text formats.')
     parser.add_argument(
@@ -1201,6 +1299,9 @@ if __name__ == "__main__":
     parser.add_argument(
         '--level-all', type=str, choices=['Error', 'Warning', 'Information', 'Critical', 'Verbose'], 
         help='Search for ALL events of specified level, ignoring Event ID filter')
+    parser.add_argument(
+        '--levels-all', nargs='+', type=str, choices=['Error', 'Warning', 'Information', 'Critical', 'Verbose'],
+        help='Search for ALL events of the specified levels (multiple), ignoring Event ID filter')
     parser.add_argument(
         '--matrix', action='store_true',
         help='Display results in a user-friendly matrix format')
@@ -1221,6 +1322,17 @@ if __name__ == "__main__":
                         help='Output a chronological timeline (jsonl or csv) instead of standard formats')
     parser.add_argument('--sessionize', choices=['none', 'user', 'host', 'logon', 'log'], default='none',
                         help='Group timeline events by session key: user, host, logon (Logon ID), or log')
+    parser.add_argument('--all-events', action='store_true',
+                        help='Search ALL events (ignore Event IDs/categories and level filters)')
+    # Regex-capable field filters
+    parser.add_argument('--user-filter', type=str, help='Regex to match user (e.g., DOMAIN\\user or user)')
+    parser.add_argument('--process-filter', type=str, help='Regex to match process/image path')
+    parser.add_argument('--parent-filter', type=str, help='Regex to match parent process/image')
+    parser.add_argument('--ip-filter', type=str, help='Regex to match source IP address')
+    parser.add_argument('--port-filter', type=str, help='Regex to match source port')
+    parser.add_argument('--logon-type-filter', type=str, help='Regex to match Logon Type value (e.g., 2,3,10)')
+    parser.add_argument('--bool', choices=['and', 'or'], default='and', help='Combine field filters with AND/OR (default AND)')
+    parser.add_argument('--not', dest='negate', action='store_true', help='Negate the combined field filter result (NOT)')
 
     args = parser.parse_args()
 
@@ -1370,8 +1482,12 @@ if __name__ == "__main__":
 
     try:
         # Determine which level filter to use
-        level_filter = args.level_all if args.level_all else args.level
-        level_all = bool(args.level_all)
+        if args.levels_all:
+            level_filter = set(args.levels_all)
+            level_all = True
+        else:
+            level_filter = args.level_all if args.level_all else args.level
+            level_all = bool(args.level_all)
         
         def run_search(quiet=False):
             search_threat_indicators(
@@ -1411,11 +1527,46 @@ if __name__ == "__main__":
                     log_filter=args.log_filter,
                     source_filter=args.source_filter,
                     description_filter=args.description_filter,
+                    field_filters={
+                        'user': args.user_filter,
+                        'process': args.process_filter,
+                        'parent': args.parent_filter,
+                        'ip': args.ip_filter,
+                        'port': args.port_filter,
+                        'logon_type': args.logon_type_filter
+                    },
+                    bool_logic=args.bool,
+                    negate=args.negate,
+                    all_events=args.all_events,
+                    explicit_event_ids=args.event_ids,
                     quiet=True
                 )
                 output_timeline(results, fmt=args.timeline, sessionize=args.sessionize)
             else:
-                run_search(quiet=False)
+                results = search_threat_indicators(
+                    hours_back=args.hours,
+                    output_format=args.format,
+                    specific_categories=args.categories,
+                    level_filter=level_filter,
+                    level_all=level_all,
+                    matrix_format=args.matrix,
+                    log_filter=args.log_filter,
+                    source_filter=args.source_filter,
+                    description_filter=args.description_filter,
+                    field_filters={
+                        'user': args.user_filter,
+                        'process': args.process_filter,
+                        'parent': args.parent_filter,
+                        'ip': args.ip_filter,
+                        'port': args.port_filter,
+                        'logon_type': args.logon_type_filter
+                    },
+                    bool_logic=args.bool,
+                    negate=args.negate,
+                    all_events=args.all_events,
+                    explicit_event_ids=args.event_ids,
+                    quiet=False
+                )
     except KeyboardInterrupt:
         print("\nSearch interrupted by user.")
     except Exception as e:

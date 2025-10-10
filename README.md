@@ -128,13 +128,26 @@ When to use which:
 - `--open-log-directory`: Open the Windows Event Log directory in Explorer.
 - `--open-both`: Open both Event Viewer and the log directory.
 - `--config <path>`: Load event IDs/categories from a JSON file.
+- `--event-ids <list>`: Explicit Event IDs to search (e.g., `--event-ids 1066 7045 4688`). Overrides categories (unless `--all-events`).
 - `-o, --output <path>`: Write results to a UTF‑8 file. For matrix view, format is treated as text.
 - `--level {Error,Warning,Information,Critical,Verbose}`: Filter by event level.
 - `--level-all {Error,Warning,Information,Critical,Verbose}`: Return all events of a level (ignores event ID filter).
+- `--levels-all <list>`: Return all events of multiple levels (e.g., `--levels-all Warning Error`).
 - `--matrix`: Tabular, width-limited matrix for quick console triage (text view).
 - `--log-filter {Application,Security,Setup,System}`: Restrict search to a single log.
 - `--source-filter <string>`: Case-insensitive contains-match on event source.
 - `--description-filter <string>`: Case-insensitive contains-match on event description.
+- `--all-events`: Search ALL events, ignoring Event IDs/categories and level filters. Combine with rich filters.
+
+Rich field filters (regex-capable) and boolean logic:
+- `--user-filter <regex>`: Match on resolved user (from event SID when available), e.g., `ACME\\alice` or `^svc_`.
+- `--process-filter <regex>`: Match on process/image name or path, e.g., `powershell\.exe|cmd\.exe`.
+- `--parent-filter <regex>`: Match on parent image, e.g., `explorer\.exe|services\.exe`.
+- `--ip-filter <regex>`: Match on source IP address, e.g., `^10\.|192\.168\.`.
+- `--port-filter <regex>`: Match on source port, e.g., `^(443|8080)$`.
+- `--logon-type-filter <regex>`: Match on Logon Type (e.g., `^10$` for RDP).
+- `--bool {and,or}`: Combine filters with AND (default) or OR.
+- `--not`: Negate the combined result (NOT).
 
 Timeline export and sessionization:
 - `--timeline {jsonl,csv}`: Output a chronological timeline in JSON Lines (one JSON object per line) or CSV format.
@@ -409,6 +422,44 @@ python ThreatHunting.py --categories credential_access_and_privilege_escalation 
 
 # Security log, all Error events, CSV timeline grouped by host
 python ThreatHunting.py --log-filter Security --level-all Error --hours 24 --timeline csv --sessionize host > sec_errors_timeline.csv
+```
+
+### Rich field filters examples
+
+```bash
+# Hunt for PowerShell or CMD spawns, regardless of category
+python ThreatHunting.py --hours 24 --process-filter "powershell\.exe|cmd\.exe" --format json
+
+# RDP logons (Logon Type 10) from RFC1918 ranges, CSV output
+python ThreatHunting.py --log-filter Security --hours 24 --logon-type-filter "^10$" --ip-filter "^(10\. |192\.168\. |172\.(1[6-9]|2[0-9]|3[0-1])\.)" --format csv
+
+# Parent is explorer.exe and process is reg.exe, require both (AND)
+python ThreatHunting.py --hours 24 --parent-filter "explorer\.exe" --process-filter "reg\.exe" --bool and --matrix
+
+# Any events for service accounts (user starts with svc_), OR logic
+python ThreatHunting.py --hours 48 --user-filter "^svc_" --process-filter "sc\.exe|services\.exe" --bool or --format json
+
+# Exclude (NOT) cmd.exe/PowerShell spawns from timeline
+python ThreatHunting.py --hours 12 --timeline jsonl --process-filter "powershell\.exe|cmd\.exe" --not
+```
+
+### Additional examples
+
+```bash
+# Search explicit Event IDs across all logs
+python ThreatHunting.py --hours 48 --event-ids 1066 7045 4688 --format text --matrix
+
+# Search ALL events but still filter by process name
+python ThreatHunting.py --hours 48 --all-events --process-filter "explorer\.exe" --format text --matrix
+
+# Search Application log General text for DLLs (General tab contains .dll paths)
+python ThreatHunting.py --hours 300 --all-events --log-filter Application --description-filter ".dll" --format text --matrix
+
+# Search Information and Warning levels, process match
+python ThreatHunting.py --hours 48 --levels-all Information Warning --process-filter "svchost\.exe|explorer\.exe" --format text --matrix
+
+# Security process creations (Information) with executable match
+python ThreatHunting.py --hours 24 --log-filter Security --levels-all Information --process-filter "\\.exe" --format text --matrix
 ```
 
 ---
