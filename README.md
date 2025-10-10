@@ -13,6 +13,7 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 - Tamper and health checks (log clears, policy changes, service stops, time skew, large gaps)
 - Sigma rule matching (load local YAML rules, tag matches, boost scores)
 - IOC-driven hunting (ingest IPs/domains/hashes/substrings; tag matches; boost scores; per-IOC hit summary)
+- LOLBAS integration (auto-download latest LOLBins catalog and generate IOCs for hunting)
 - Offline EVTX parsing (hunt across .evtx files/directories, preserve channel/timestamps)
 - Config management: single/multiple configs, schema validation, merge diffs, and named presets
 - Sinks and integrations: HTTP webhook and Splunk HEC
@@ -140,8 +141,10 @@ This repository includes directories with ready-to-use hunting assets:
   - IOC samples for quick testing and demos.
   - `ioc/common_iocs.csv` (CSV headers: `type,value`) supports `ip`, `domain`, `hash`, `substring`.
   - `ioc/common_iocs.txt` simple line-based list; auto-detected type.
+  - `ioc/lolbins_iocs.csv` curated LOLBins substrings and patterns.
   - `ioc/stix/common_stix.json` minimal STIX bundle with indicators.
   - Use with `--ioc` and `--ioc-format {csv,txt,stix}`.
+  - Auto-update LOLBins IOCs: `python ThreatHunting.py --update-lolbas-iocs`
 
 - `evtx/`:
   - Place sample `.evtx` files here (see `evtx/README.txt`) for offline hunting.
@@ -158,6 +161,12 @@ python ThreatHunting.py --hours 24 --all-events --ioc ioc/common_iocs.csv --ioc-
 
 # STIX JSON ingestion
 python ThreatHunting.py --hours 24 --all-events --ioc ioc/stix/common_stix.json --ioc-format stix --format jsonl
+
+# Update LOLBins IOCs from LOLBAS project
+python ThreatHunting.py --update-lolbas-iocs
+
+# Hunt with updated LOLBins IOCs
+python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc-format csv --format text --matrix
 
 # Offline EVTX hunting (directory)
 python ThreatHunting.py --hours 168 --evtx evtx --all-events --format text --matrix
@@ -208,6 +217,8 @@ python ThreatHunting.py --hours 168 --evtx evtx --all-events --format text --mat
 - `--ioc-format {csv,txt,stix}`: IOC input format (default csv).
 - `--ioc-boost <int>`: Score boost per IOC hit (default 5).
 - `--evtx <paths>`: One or more .evtx files or directories (recursive) to parse offline.
+- `--update-lolbas-iocs`: Fetch latest LOLBAS catalog and generate ioc/lolbins_iocs.csv.
+- `--lolbas-url <url>`: LOLBAS API URL (default: https://lolbas-project.github.io/api/lolbas.json).
 - `--sigma-dir <path>`: Directory with Sigma YAML rules to evaluate locally (simple selection support).
 - `--sigma-boost <int>`: Score boost per matched Sigma rule (default 10).
 
@@ -610,6 +621,43 @@ python ThreatHunting.py --hours 168 --all-events --max-events 30000 --concurrenc
 
 # Focused lookback for log tamper signals
 python ThreatHunting.py --hours 7 --event-ids 1102 1101 1100 4719 --format text
+
+# LOLBins hunting recipes
+
+```bash
+# Broad LOLBins sweep (last 24h)
+python ThreatHunting.py --hours 24 --all-events --process-filter "powershell\.exe|cmd\.exe|rundll32\.exe|regsvr32\.exe|mshta\.exe|wscript\.exe|cscript\.exe|certutil\.exe|bitsadmin\.exe|schtasks\.exe|wmic\.exe" --format text --matrix
+
+# LOLBins with suspicious command-line substrings (base64, AMSI bypass, download cradles)
+python ThreatHunting.py --hours 24 --all-events --process-filter "powershell\.exe|cmd\.exe|mshta\.exe|rundll32\.exe" --description-filter " -enc |FromBase64String|bypass|amsi|downloadstring|bitsadmin " --format json
+
+# Office spawning LOLBins (parent-child anomaly)
+python ThreatHunting.py --hours 48 --all-events --parent-filter "winword\.exe|excel\.exe|powerpnt\.exe|outlook\.exe" --process-filter "powershell\.exe|rundll32\.exe|regsvr32\.exe|cmd\.exe|mshta\.exe" --format text --matrix
+
+# Sigma-assisted LOLBins (use included rules) with score boost
+python ThreatHunting.py --hours 48 --all-events --sigma-dir sigma/windows --sigma-boost 15 --format text --matrix
+
+# Timeline view for LOLBin activity by user (quick narrative)
+python ThreatHunting.py --hours 24 --all-events --process-filter "powershell\.exe|cmd\.exe|rundll32\.exe" --timeline jsonl --sessionize user > lolbin_user_timeline.jsonl
+
+# Narrow to execution/defense-evasion category (lower noise)
+python ThreatHunting.py --hours 24 --categories execution_and_defense_evasion --process-filter "powershell\.exe|rundll32\.exe|regsvr32\.exe" --format text --matrix
+
+# Offline EVTX triage for LOLBins
+python ThreatHunting.py --hours 168 --evtx evtx --all-events --process-filter "powershell\.exe|cmd\.exe|rundll32\.exe" --format text --matrix
+
+# Raise signal by combining levels and allowlist to suppress noise
+python ThreatHunting.py --hours 24 --all-events --levels-all Information Warning --allowlist config/allowlist.json --process-filter "powershell\.exe|cmd\.exe|rundll32\.exe" --format text --matrix
+
+# IOC-driven LOLBin substrings (use provided ioc/lolbins_iocs.csv)
+python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc-format csv --format text --matrix
+
+# Update LOLBins IOCs from latest LOLBAS catalog
+python ThreatHunting.py --update-lolbas-iocs
+
+# Hunt with freshly updated LOLBins IOCs
+python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc-format csv --format text --matrix
+```
 
 # Offline EVTX hunting across a directory of files (triage bundle)
 python ThreatHunting.py --hours 168 --evtx C:\\triage\\evtx_dump --all-events --format text --matrix

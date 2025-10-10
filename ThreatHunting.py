@@ -2072,6 +2072,11 @@ if __name__ == "__main__":
                         help='Check Windows Event Log service status and exit')
     parser.add_argument('--evtx', nargs='+', type=str,
                         help='One or more .evtx files or directories to parse offline (searches recursively)')
+    # LOLBAS updater
+    parser.add_argument('--update-lolbas-iocs', action='store_true',
+                        help='Fetch latest LOLBAS catalog and generate ioc/lolbas_iocs.csv')
+    parser.add_argument('--lolbas-url', type=str, default='https://lolbas-project.github.io/api/lolbas.json',
+                        help='LOLBAS API URL (default: https://lolbas-project.github.io/api/lolbas.json)')
     # Output sinks
     parser.add_argument('--webhook', type=str,
                         help='HTTP endpoint to POST results (JSONL when --format jsonl, JSON otherwise)')
@@ -2254,6 +2259,56 @@ if __name__ == "__main__":
                 print(f"Error checking service status: {e}")
                 sys.exit(1)
         check_eventlog_service_status()
+
+    if getattr(args, 'update_lolbas_iocs', False):
+        def update_lolbas_iocs(api_url, out_path=os.path.join('ioc', 'lolbins_iocs.csv')):
+            try:
+                if requests is None:
+                    print("requests not installed; cannot fetch LOLBAS API.")
+                    sys.exit(1)
+                print(f"Fetching LOLBAS catalog: {api_url}")
+                r = requests.get(api_url, timeout=20)
+                r.raise_for_status()
+                data = r.json()
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                # Write as substring IOCs: binary names and command patterns
+                with open(out_path, 'w', encoding='utf-8', newline='') as f:
+                    f.write('type,value\n')
+                    for entry in data:
+                        # Extract binary name
+                        name = (entry.get('Name') or '').strip()
+                        if name:
+                            f.write(f'substring,{name.lower()}\n')
+                        
+                        # Extract commands and their patterns
+                        commands = entry.get('Commands', [])
+                        for cmd in commands:
+                            command_text = (cmd.get('Command') or '').strip()
+                            if command_text:
+                                # Extract executable names and suspicious patterns
+                                parts = command_text.split()
+                                for part in parts:
+                                    if part.endswith('.exe') or part.endswith('.vbs') or part.endswith('.ps1') or part.endswith('.bat'):
+                                        f.write(f'substring,{part.lower()}\n')
+                                    # Look for suspicious patterns
+                                    if any(pattern in part.lower() for pattern in ['-enc', 'downloadstring', 'iex', 'bypass', 'amsi']):
+                                        f.write(f'substring,{part.lower()}\n')
+                        
+                        # Extract full paths
+                        full_paths = entry.get('Full_Path', [])
+                        for path_entry in full_paths:
+                            path = (path_entry.get('Path') or '').strip()
+                            if path:
+                                exe_name = os.path.basename(path)
+                                if exe_name:
+                                    f.write(f'substring,{exe_name.lower()}\n')
+                
+                print(f"Wrote LOLBAS IOCs: {out_path}")
+                sys.exit(0)
+            except Exception as e:
+                print(f"Failed to update LOLBAS IOCs: {e}")
+                sys.exit(1)
+        update_lolbas_iocs(args.lolbas_url)
 
     if args.check_availability:
         searcher = WindowsEventLogSearcher()
