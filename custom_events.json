@@ -1,0 +1,25 @@
+{
+  "my_custom_category": [
+    4624,
+    4625,
+    4688,
+    4104
+  ],
+  "high_priority_events": [
+    1102,
+    4698,
+    7045,
+    4688
+  ],
+  "network_events": [
+    5156,
+    5157,
+    5140,
+    5142
+  ],
+  "powershell_events": [
+    4104,
+    4103,
+    4100
+  ]
+}

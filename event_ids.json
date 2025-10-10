@@ -1,0 +1,74 @@
+{
+  "credential_access_and_privilege_escalation": [
+    4624,
+    4625,
+    4648,
+    4672,
+    4688,
+    4697,
+    7045,
+    4732,
+    4728,
+    4756,
+    1102
+  ],
+  "persistence_and_startup_modification": [
+    4688,
+    7040,
+    7045,
+    12,
+    13,
+    14,
+    106,
+    140,
+    4698
+  ],
+  "lateral_movement_and_remote_access": [
+    4624,
+    4648,
+    4776,
+    5140,
+    5142,
+    5145,
+    7045
+  ],
+  "execution_and_defense_evasion": [
+    4688,
+    4689,
+    4104,
+    4103,
+    600,
+    4100,
+    1116,
+    1117
+  ],
+  "exfiltration_and_c2": [
+    5156,
+    5157,
+    4688,
+    400,
+    403,
+    600
+  ],
+  "critical_smoking_gun_indicators": [
+    1102,
+    4698,
+    7045,
+    4688,
+    10,
+    4104,
+    4732,
+    4728,
+    5156,
+    5157
+  ],
+  "correlation_and_hunting_helpers": [
+    4689,
+    4624,
+    4625,
+    4648,
+    4776,
+    5140,
+    5145
+  ]
+}
