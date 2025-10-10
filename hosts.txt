@@ -1,0 +1,9 @@
+# Sample hosts file for multi-host hunting
+# One host per line (IP addresses or hostnames)
+# Lines starting with # are comments
+
+192.168.1.10
+192.168.1.11
+192.168.1.12
+server1.example.com
+server2.example.com

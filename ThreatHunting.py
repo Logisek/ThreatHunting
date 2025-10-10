@@ -15,6 +15,7 @@ from contextlib import redirect_stdout
 import ctypes
 import re
 import json as _json
+import socket
 try:
     import yaml
 except Exception:
@@ -52,6 +53,8 @@ def load_event_ids_from_json(json_file_path):
         print(
             f"Error: Event ID configuration file not found: {json_file_path}")
         return None
+
+
 def validate_config_schema(cfg):
     """Validate that cfg is a mapping of category -> list[int]."""
     if not isinstance(cfg, dict):
@@ -66,10 +69,11 @@ def validate_config_schema(cfg):
                 return False, f"Category '{cat}' contains non-integer event id: {repr(eid)}"
     return True, None
 
+
 def merge_configs_with_diff(base_cfg, override_cfg):
     """Merge override_cfg into base_cfg. Return (merged, diff) where diff describes added cats/ids."""
     merged = {k: list(v) for k, v in (base_cfg or {}).items()}
-    diff = { 'new_categories': [], 'updated_categories': {} }
+    diff = {'new_categories': [], 'updated_categories': {}}
     for cat, ids in (override_cfg or {}).items():
         ids_set = set(ids)
         if cat not in merged:
@@ -83,6 +87,7 @@ def merge_configs_with_diff(base_cfg, override_cfg):
                 diff['updated_categories'][cat] = sorted(added)
     return merged, diff
 
+
 def print_config_diff(diff, quiet=False):
     if quiet:
         return
@@ -92,7 +97,8 @@ def print_config_diff(diff, quiet=False):
         if diff.get('updated_categories'):
             print("Updated categories (added Event IDs):")
             for cat, added in diff['updated_categories'].items():
-                print(f"  {cat}: +{len(added)} -> {added[:10]}{'...' if len(added) > 10 else ''}")
+                print(
+                    f"  {cat}: +{len(added)} -> {added[:10]}{'...' if len(added) > 10 else ''}")
     except Exception:
         pass
     except json.JSONDecodeError as e:
@@ -196,14 +202,262 @@ ALL_EVENT_IDS = None
 
 
 class WindowsEventLogSearcher:
-    def __init__(self, sigma_rules=None, sigma_boost=10, iocs=None, ioc_boost=5):
+    def __init__(self, sigma_rules=None, sigma_boost=10, iocs=None, ioc_boost=5,
+                 remote_hosts=None, timeout=30, parallel_hosts=5, username=None,
+                 password=None, domain=None, auth_method='winrm'):
         self.logs = ['Application', 'Security', 'Setup', 'System']
         self.results = []
         self.sigma_rules = sigma_rules or []
         self.sigma_boost = sigma_boost
-        self.iocs = iocs or {'ips': set(), 'domains': set(), 'hashes': set(), 'substrings': set()}
+        self.iocs = iocs or {'ips': set(), 'domains': set(),
+                                        'hashes': set(), 'substrings': set()}
         self.ioc_boost = ioc_boost
         self.ioc_hits_counter = {}
+        self.remote_hosts = remote_hosts or []
+        self.timeout = timeout
+        self.parallel_hosts = parallel_hosts
+        self.username = username
+        self.password = password
+        self.domain = domain
+        self.auth_method = auth_method
+
+    def _query_remote_host(self, host, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events):
+        """Query a single remote host for event logs"""
+        try:
+            if self.auth_method == 'winrm':
+                return self._query_remote_winrm(host, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events)
+            elif self.auth_method == 'wmi':
+                return self._query_remote_wmi(host, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events)
+            elif self.auth_method == 'ssh':
+                return self._query_remote_ssh(host, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events)
+        except Exception as e:
+            print(f"Error querying host {host}: {e}")
+            return []
+
+    def _query_remote_winrm(self, host, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events):
+        """Query remote host using WinRM"""
+        try:
+            # Build PowerShell command for remote execution
+            ps_cmd = self._build_remote_powershell_command(
+                event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events)
+
+            # Use winrs for remote execution
+            cmd = f'winrs -r:{host} -u:{self.username or ""} -p:{self.password or ""} powershell -Command "{ps_cmd}"'
+
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=self.timeout)
+
+            if result.returncode == 0:
+                # Parse the JSON output from remote host
+                try:
+                    remote_results = json.loads(result.stdout)
+                    # Add host information to each result
+                    for event in remote_results:
+                        event['remote_host'] = host
+                    return remote_results
+                except json.JSONDecodeError:
+                    print(f"Failed to parse JSON from host {host}")
+                    return []
+            else:
+                print(f"Remote command failed on {host}: {result.stderr}")
+                return []
+
+        except subprocess.TimeoutExpired:
+            print(f"Timeout querying host {host}")
+            return []
+        except Exception as e:
+            print(f"Error querying host {host} via WinRM: {e}")
+            return []
+
+    def _query_remote_wmi(self, host, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events):
+        """Query remote host using WMI"""
+        try:
+            # Build WMI query for remote execution
+            wmi_query = self._build_remote_wmi_query(event_ids, hours_back, level_filter, level_all,
+                                                     log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events)
+
+            # Use wmic for remote execution
+            cmd = f'wmic /node:"{host}" /user:"{self.username or ""}" /password:"{self.password or ""}" path Win32_NTLogEvent where "{wmi_query}" get /format:csv'
+
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=self.timeout)
+
+            if result.returncode == 0:
+                # Parse the CSV output from remote host
+                return self._parse_wmi_csv_output(result.stdout, host)
+            else:
+                print(f"WMI query failed on {host}: {result.stderr}")
+                return []
+
+        except subprocess.TimeoutExpired:
+            print(f"Timeout querying host {host}")
+            return []
+        except Exception as e:
+            print(f"Error querying host {host} via WMI: {e}")
+            return []
+
+    def _build_remote_powershell_command(self, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events):
+        """Build PowerShell command for remote execution"""
+        # This is a simplified version - in practice, you'd want to embed the full search logic
+        cmd_parts = [
+            "Get-WinEvent -FilterHashtable @{",
+            f"LogName='{','.join(log_filter or self.logs)}';",
+            f"StartTime=(Get-Date).AddHours(-{hours_back})",
+        ]
+
+        if not level_all and event_ids:
+            cmd_parts.append(f";ID={','.join(map(str, event_ids))}")
+
+        if level_filter:
+            cmd_parts.append(f";Level={level_filter}")
+
+        cmd_parts.append("} | ConvertTo-Json -Depth 3")
+
+        return "".join(cmd_parts)
+
+    def _build_remote_wmi_query(self, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events):
+        """Build WMI query for remote execution"""
+        conditions = []
+
+        if not level_all and event_ids:
+            event_id_condition = " or ".join(
+                [f"EventCode={eid}" for eid in event_ids])
+            conditions.append(f"({event_id_condition})")
+
+        if level_filter:
+            conditions.append(f"Type='{level_filter}'")
+
+        if log_filter:
+            log_condition = " or ".join(
+                [f"LogFile='{log}'" for log in log_filter])
+            conditions.append(f"({log_condition})")
+
+        # Add time filter (simplified)
+        time_filter = f"TimeGenerated>='{datetime.now() - timedelta(hours=hours_back)}'"
+        conditions.append(time_filter)
+
+        return " and ".join(conditions)
+
+    def _parse_wmi_csv_output(self, csv_output, host):
+        """Parse WMI CSV output and convert to standard format"""
+        results = []
+        lines = csv_output.strip().split('\n')
+
+        if len(lines) < 2:
+            return results
+
+        # Skip header line
+        for line in lines[1:]:
+            if line.strip():
+                # Parse CSV line and convert to standard event format
+                # This is simplified - you'd need to map WMI fields to standard event fields
+                parts = line.split(',')
+                if len(parts) >= 5:
+                    event = {
+                        'remote_host': host,
+                        'EventID': parts[0] if parts[0] else 'Unknown',
+                        'TimeGenerated': parts[1] if parts[1] else 'Unknown',
+                        'LogName': parts[2] if parts[2] else 'Unknown',
+                        'Source': parts[3] if parts[3] else 'Unknown',
+                        'Message': parts[4] if parts[4] else 'Unknown'
+                    }
+                    results.append(event)
+
+        return results
+
+    def _query_remote_ssh(self, host, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events):
+        """Query remote host using SSH PowerShell remoting (requires PowerShell 7 + SSH server)"""
+        try:
+            # Build PowerShell command to run remotely
+            ps_cmd = self._build_remote_powershell_command(
+                event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events)
+            # Escape quotes for SSH
+            ps_cmd_escaped = ps_cmd.replace('"', '\\"')
+            ssh_user = self.username or ''
+            key_arg = f" -i \"{self._normalize_path(self.ssh_key)}\"" if getattr(
+                self, 'ssh_key', None) else ''
+            port_arg = f" -p {getattr(self, 'ssh_port', 22)}" if getattr(
+                self, 'ssh_port', None) else ''
+            user_host = f"{ssh_user}@{host}" if ssh_user else host
+            cmd = f"ssh -o BatchMode=yes -o ConnectTimeout={self.timeout}{port_arg}{key_arg} {user_host} powershell -NoProfile -Command \"{ps_cmd_escaped}\""
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=self.timeout)
+            if result.returncode == 0:
+                try:
+                    remote_results = json.loads(result.stdout)
+                    for event in remote_results:
+                        event['remote_host'] = host
+                    return remote_results
+                except json.JSONDecodeError:
+                    print(f"Failed to parse JSON from host {host} (SSH)")
+                    return []
+            else:
+                print(f"SSH command failed on {host}: {result.stderr}")
+                return []
+        except subprocess.TimeoutExpired:
+            print(f"Timeout querying host {host} via SSH")
+            return []
+        except Exception as e:
+            print(f"Error querying host {host} via SSH: {e}")
+            return []
+
+    def _normalize_path(self, p):
+        try:
+            return os.path.abspath(os.path.expanduser(p))
+        except Exception:
+            return p
+
+    def search_remote_hosts(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, progress=False, allowlist=None, suppress_rules=None):
+        """Search for events across multiple remote hosts"""
+        if not self.remote_hosts:
+            print("No remote hosts specified")
+            return []
+
+        print(f"Querying {len(self.remote_hosts)} remote hosts...")
+        all_results = []
+
+        # Use ThreadPoolExecutor for parallel host queries
+        with ThreadPoolExecutor(max_workers=self.parallel_hosts) as executor:
+            # Submit tasks for each host
+            future_to_host = {
+                executor.submit(
+                    self._query_remote_host,
+                    host, event_ids, hours_back, level_filter, level_all,
+                    log_filter, source_filter, description_filter, field_filters,
+                    bool_logic, negate, max_events
+                ): host for host in self.remote_hosts
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_host):
+                host = future_to_host[future]
+                try:
+                    host_results = future.result()
+                    all_results.extend(host_results)
+                    if not quiet:
+                        print(
+                            f"Retrieved {len(host_results)} events from {host}")
+                except Exception as e:
+                    print(f"Error processing results from {host}: {e}")
+
+        # Process results with local filtering and scoring
+        self.results = all_results
+        self._apply_local_processing()
+
+        return all_results
+
+    def _apply_local_processing(self):
+        """Apply local processing (scoring, Sigma rules, IOCs) to remote results"""
+        for event in self.results:
+            # Apply scoring
+            event['score'] = self._score_event(event)
+            event['risk_reasons'] = self._get_risk_reasons(event)
+
+            # Apply Sigma rules
+            self._apply_sigma_rules(event)
+
+            # Apply IOCs
+            self._apply_iocs(event)
 
     def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, concurrency=1, progress=False, allowlist=None, suppress_rules=None):
         """
@@ -224,7 +478,8 @@ class WindowsEventLogSearcher:
 
         if not quiet:
             if level_all:
-                print(f"Searching for ALL {level_filter} events (ignoring Event ID filter)")
+                print(
+                    f"Searching for ALL {level_filter} events (ignoring Event ID filter)")
             else:
                 print(f"Searching for Event IDs: {event_ids}")
                 if level_filter:
@@ -244,12 +499,14 @@ class WindowsEventLogSearcher:
         self.field_filters = field_filters or {}
         self.bool_logic = bool_logic
         self.negate = negate
-        self.max_events = max_events if isinstance(max_events, int) and max_events >= 0 else 0
+        self.max_events = max_events if isinstance(
+            max_events, int) and max_events >= 0 else 0
         self.allowlist = allowlist or {}
         self.suppress_rules = suppress_rules or []
 
         # If EVTX mode, override logs handling
-        self.evtx_paths = getattr(args, 'evtx', None) if 'args' in globals() else None
+        self.evtx_paths = getattr(
+            args, 'evtx', None) if 'args' in globals() else None
         if self.evtx_paths:
             # Offline parsing mode
             files = []
@@ -265,7 +522,8 @@ class WindowsEventLogSearcher:
                 print(f"Parsing {len(files)} EVTX file(s)...")
             for idx, f in enumerate(files):
                 try:
-                    self._search_evtx_file(f, event_ids, start_time, position=idx)
+                    self._search_evtx_file(
+                        f, event_ids, start_time, position=idx)
                 except Exception as e:
                     print(f"Error parsing {f}: {e}")
             self._output_results(output_format)
@@ -294,7 +552,8 @@ class WindowsEventLogSearcher:
                     pass
                 pbar = None
                 if use_progress:
-                    pbar = tqdm(total=total, desc=f"{log_name}", position=position, leave=False)
+                    pbar = tqdm(
+                        total=total, desc=f"{log_name}", position=position, leave=False)
                 lst = self._search_log(log_name, event_ids, start_time, pbar)
                 if pbar is not None:
                     pbar.close()
@@ -327,28 +586,28 @@ class WindowsEventLogSearcher:
             # Try to enable security privilege if accessing Security log
             if log_name == "Security":
                 self._enable_security_privilege()
-            
+
             # Open the event log
             hand = win32evtlog.OpenEventLog(None, log_name)
-            
+
             # Get the number of records
             num_records = win32evtlog.GetNumberOfEventLogRecords(hand)
             if not self.quiet:
                 print(f"  Found {num_records} total records in {log_name} log")
-            
+
             # Read events in reverse chronological order (newest first)
             flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
-            
+
             events_checked = 0
             matches_found = 0
-            
+
             # Read events in batches to avoid memory issues
             while True:
                 try:
                     events = win32evtlog.ReadEventLog(hand, flags, 0)
                     if not events:
                         break
-                    
+
                     for event in events:
                         events_checked += 1
                         # Check if event is within our time range
@@ -356,7 +615,7 @@ class WindowsEventLogSearcher:
                         if event_time < start_time:
                             # We've gone past our time window; stop processing this batch item
                             continue
-                        
+
                         # Check if this is one of our target Event IDs (or if we're in level_all mode)
                         if self.level_all or event.EventID in event_ids:
                             self._process_event(event, log_name)
@@ -365,22 +624,24 @@ class WindowsEventLogSearcher:
                         if pbar is not None:
                             pbar.update(1)
                         elif not self.quiet and events_checked % 200 == 0:
-                            target = str(self.max_events) if self.max_events else '∞'
-                            print(f"  Progress: checked {events_checked}/{target} events in {log_name}...")
+                            target = str(
+                                self.max_events) if self.max_events else '∞'
+                            print(
+                                f"  Progress: checked {events_checked}/{target} events in {log_name}...")
                         # Respect max events limit
                         if self.max_events and events_checked >= self.max_events:
                             break
-                    
+
                     # If we've checked enough events, break
                     if self.max_events and events_checked >= self.max_events:
                         break
-                        
+
                 except Exception as e:
                     if "No more data is available" in str(e):
                         break
                     else:
                         raise e
-            
+
             if pbar is not None:
                 # fill remaining if total known and not exceeded
                 try:
@@ -390,16 +651,20 @@ class WindowsEventLogSearcher:
                 except Exception:
                     pass
             if not self.quiet and not pbar:
-                print(f"  Checked {events_checked} events in {log_name} log, found {matches_found} matches")
+                print(
+                    f"  Checked {events_checked} events in {log_name} log, found {matches_found} matches")
             win32evtlog.CloseEventLog(hand)
             return self.results if pbar is None else []
-            
+
         except Exception as e:
             if "A required privilege is not held by the client" in str(e):
-                print(f"  {log_name} log: Access denied - requires elevated privileges")
-                print(f"  Note: Security log requires 'SeSecurityPrivilege' even from elevated prompt")
+                print(
+                    f"  {log_name} log: Access denied - requires elevated privileges")
+                print(
+                    f"  Note: Security log requires 'SeSecurityPrivilege' even from elevated prompt")
             elif "Access is denied" in str(e):
-                print(f"  {log_name} log: Access denied - insufficient privileges")
+                print(
+                    f"  {log_name} log: Access denied - insufficient privileges")
             else:
                 print(f"Error reading {log_name} log: {e}")
             return []
@@ -416,28 +681,35 @@ class WindowsEventLogSearcher:
                     try:
                         xml = record.xml()
                         root = ET.fromstring(xml)
-                        ns = {'e':'http://schemas.microsoft.com/win/2004/08/events/event'}
+                        ns = {
+                            'e': 'http://schemas.microsoft.com/win/2004/08/events/event'}
                         # Timestamp
                         ts = root.findtext('.//e:TimeCreated', namespaces=ns)
                         # Fallback: system time in attributes
                         if ts is None:
-                            node = root.find('.//e:System/e:TimeCreated', namespaces=ns)
+                            node = root.find(
+                                './/e:System/e:TimeCreated', namespaces=ns)
                             if node is not None and 'SystemTime' in node.attrib:
                                 ts = node.attrib.get('SystemTime')
                         if ts:
                             try:
                                 # normalize to '%Y-%m-%d %H:%M:%S'
-                                ts_dt = datetime.fromisoformat(ts.replace('Z','+00:00')).astimezone().replace(tzinfo=None)
+                                ts_dt = datetime.fromisoformat(ts.replace(
+                                    'Z', '+00:00')).astimezone().replace(tzinfo=None)
                             except Exception:
-                                ts_dt = datetime.strptime(ts.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+                                ts_dt = datetime.strptime(
+                                    ts.split('.')[0], '%Y-%m-%dT%H:%M:%S')
                         else:
                             ts_dt = datetime.min
                         if ts_dt < start_time:
                             continue
                         # Channel/Provider/EventID
-                        log_name = root.findtext('.//e:System/e:Channel', namespaces=ns) or 'EVTX'
-                        provider = root.findtext('.//e:System/e:Provider', namespaces=ns) or 'Unknown'
-                        eid_text = root.findtext('.//e:System/e:EventID', namespaces=ns) or '0'
+                        log_name = root.findtext(
+                            './/e:System/e:Channel', namespaces=ns) or 'EVTX'
+                        provider = root.findtext(
+                            './/e:System/e:Provider', namespaces=ns) or 'Unknown'
+                        eid_text = root.findtext(
+                            './/e:System/e:EventID', namespaces=ns) or '0'
                         try:
                             eid = int(eid_text)
                         except Exception:
@@ -448,7 +720,8 @@ class WindowsEventLogSearcher:
                             val = ''.join(data.itertext()).strip()
                             if val:
                                 desc_parts.append(val)
-                        description = ' | '.join(desc_parts) or 'No description available'
+                        description = ' | '.join(
+                            desc_parts) or 'No description available'
 
                         dummy_event = type('X', (), {})()
                         dummy_event.EventType = win32con.EVENTLOG_INFORMATION_TYPE
@@ -468,7 +741,7 @@ class WindowsEventLogSearcher:
         try:
             # Get event level
             event_level = self._get_event_level(event.EventType)
-            
+
             # Apply level filter if specified
             if self.level_filter:
                 if isinstance(self.level_filter, (set, list, tuple)):
@@ -478,15 +751,15 @@ class WindowsEventLogSearcher:
                     if event_level != self.level_filter:
                         return
                 return
-            
+
             # Get event description
             description = win32evtlogutil.SafeFormatMessage(event, log_name)
             description = description.strip() if description else 'No description available'
-            
+
             # Apply source filter if specified
             if self.source_filter and self.source_filter.lower() not in event.SourceName.lower():
                 return
-            
+
             # Apply description filter if specified
             if self.description_filter and self.description_filter.lower() not in description.lower():
                 return
@@ -495,7 +768,8 @@ class WindowsEventLogSearcher:
             user_name = None
             try:
                 if hasattr(event, 'Sid') and event.Sid:
-                    name, domain, _ = win32security.LookupAccountSid(None, event.Sid)
+                    name, domain, _ = win32security.LookupAccountSid(
+                        None, event.Sid)
                     if domain:
                         user_name = f"{domain}\\{name}"
                     else:
@@ -534,14 +808,16 @@ class WindowsEventLogSearcher:
                 if matches:
                     event_data['sigma_matches'] = matches
                     event_data['sigma_tags'] = sorted(list(tags))
-                    event_data['score'] = event_data.get('score', 0) + self.sigma_boost * len(matches)
+                    event_data['score'] = event_data.get(
+                        'score', 0) + self.sigma_boost * len(matches)
 
             # IOC matching
             if self.iocs:
                 hits = self._apply_iocs(event_data)
                 if hits:
                     event_data['ioc_hits'] = hits
-                    event_data['score'] = event_data.get('score', 0) + self.ioc_boost * len(hits)
+                    event_data['score'] = event_data.get(
+                        'score', 0) + self.ioc_boost * len(hits)
 
             # Apply field filters if provided
             if self._matches_field_filters(event_data) and not self._is_suppressed(event_data):
@@ -607,6 +883,7 @@ class WindowsEventLogSearcher:
             print("Warning: requests not installed; cannot send to sinks.")
             return
         # Batch iterator
+
         def batches(lst, n):
             for i in range(0, len(lst), n):
                 yield lst[i:i+n]
@@ -614,18 +891,26 @@ class WindowsEventLogSearcher:
         try:
             if webhook_url:
                 for chunk in batches(self.results, max(1, batch_size)):
-                    data = '\n'.join(_json.dumps(item, default=str) for item in chunk) if use_jsonl else _json.dumps(chunk, default=str)
-                    headers = {'Content-Type': 'application/x-ndjson' if use_jsonl else 'application/json'}
-                    r = requests.post(webhook_url, data=data if use_jsonl else data, headers=headers, timeout=10)
+                    data = '\n'.join(_json.dumps(item, default=str)
+                                     for item in chunk) if use_jsonl else _json.dumps(chunk, default=str)
+                    headers = {
+                        'Content-Type': 'application/x-ndjson' if use_jsonl else 'application/json'}
+                    r = requests.post(
+                        webhook_url, data=data if use_jsonl else data, headers=headers, timeout=10)
                     if r.status_code >= 300:
-                        print(f"Webhook sink POST failed: {r.status_code} {r.text[:120]}")
+                        print(
+                            f"Webhook sink POST failed: {r.status_code} {r.text[:120]}")
             if hec_url and hec_token:
-                headers = {'Authorization': f'Splunk {hec_token}', 'Content-Type': 'application/json'}
+                headers = {'Authorization': f'Splunk {hec_token}',
+                    'Content-Type': 'application/json'}
                 for chunk in batches(self.results, max(1, batch_size)):
-                    payload = '\n'.join(_json.dumps({'event': item}, default=str) for item in chunk)
-                    r = requests.post(hec_url, data=payload, headers=headers, timeout=10)
+                    payload = '\n'.join(_json.dumps(
+                        {'event': item}, default=str) for item in chunk)
+                    r = requests.post(hec_url, data=payload,
+                                      headers=headers, timeout=10)
                     if r.status_code >= 300:
-                        print(f"HEC sink POST failed: {r.status_code} {r.text[:120]}")
+                        print(
+                            f"HEC sink POST failed: {r.status_code} {r.text[:120]}")
         except Exception as e:
             print(f"Error sending to sinks: {e}")
 
@@ -635,16 +920,19 @@ class WindowsEventLogSearcher:
             if not self.results:
                 return
             # Top by score
-            top = sorted(self.results, key=lambda e: e.get('score', 0), reverse=True)[:10]
+            top = sorted(self.results, key=lambda e: e.get(
+                'score', 0), reverse=True)[:10]
             print("\nTop findings (by score):")
             print("-" * 80)
             for i, e in enumerate(top, 1):
-                print(f"{i:>2}. [{e.get('score',0)}] EID {e['event_id']} {e['log_name']} {e['source']} - {e['timestamp']} :: {e['description'][:80].replace('\n',' ')}")
+                print(
+                    f"{i:>2}. [{e.get('score', 0)}] EID {e['event_id']} {e['log_name']} {e['source']} - {e['timestamp']} :: {e['description'][:80].replace('\n', ' ')}")
 
             # Heatmaps/counts by category and source
             from collections import Counter
-            cat_counts = Counter([e.get('category','Unknown') for e in self.results])
-            src_counts = Counter([e.get('source','') for e in self.results])
+            cat_counts = Counter([e.get('category', 'Unknown')
+                                 for e in self.results])
+            src_counts = Counter([e.get('source', '') for e in self.results])
 
             print("\nCounts by category:")
             for cat, cnt in cat_counts.most_common(10):
@@ -676,11 +964,12 @@ class WindowsEventLogSearcher:
                 src = e.get('source', '') or ''
                 by_eid[eid] += 1
                 by_source[src] += 1
-                by_log[e.get('log_name','')].append(e)
+                by_log[e.get('log_name', '')].append(e)
 
                 # Future timestamp (>5 min ahead)
                 try:
-                    ts = datetime.strptime(e.get('timestamp',''), '%Y-%m-%d %H:%M:%S')
+                    ts = datetime.strptime(
+                        e.get('timestamp', ''), '%Y-%m-%d %H:%M:%S')
                     if ts - now > timedelta(minutes=5):
                         future_events += 1
                 except Exception:
@@ -688,21 +977,26 @@ class WindowsEventLogSearcher:
 
             # Known tamper/health indicators
             if by_eid.get(1102, 0):
-                issues.append(f"Security log cleared events (1102): {by_eid.get(1102)}")
+                issues.append(
+                    f"Security log cleared events (1102): {by_eid.get(1102)}")
             if by_eid.get(1101, 0):
-                issues.append(f"Audit events dropped (1101): {by_eid.get(1101)}")
+                issues.append(
+                    f"Audit events dropped (1101): {by_eid.get(1101)}")
             if by_eid.get(1100, 0):
-                issues.append(f"Event logging service shutdown (1100): {by_eid.get(1100)}")
+                issues.append(
+                    f"Event logging service shutdown (1100): {by_eid.get(1100)}")
             if by_eid.get(4719, 0):
-                issues.append(f"System audit policy changed (4719): {by_eid.get(4719)}")
+                issues.append(
+                    f"System audit policy changed (4719): {by_eid.get(4719)}")
 
             # Service Control Manager indicates Event Log service stopped (7036 with stopped state)
             scm_stops = 0
             for e in self.results:
-                if (e.get('source','') == 'Service Control Manager' and str(e.get('event_id')) == '7036' and 'stopped' in (e.get('description','').lower())):
+                if (e.get('source', '') == 'Service Control Manager' and str(e.get('event_id')) == '7036' and 'stopped' in (e.get('description', '').lower())):
                     scm_stops += 1
             if scm_stops:
-                issues.append(f"Windows Event Log service stopped state (7036): {scm_stops}")
+                issues.append(
+                    f"Windows Event Log service stopped state (7036): {scm_stops}")
 
             # Time skew
             if future_events:
@@ -711,11 +1005,14 @@ class WindowsEventLogSearcher:
             # Gap analysis (>24h) per log
             for log, items in by_log.items():
                 try:
-                    ordered = sorted(items, key=lambda x: datetime.strptime(x.get('timestamp',''), '%Y-%m-%d %H:%M:%S'))
+                    ordered = sorted(items, key=lambda x: datetime.strptime(
+                        x.get('timestamp', ''), '%Y-%m-%d %H:%M:%S'))
                     max_gap = timedelta(0)
                     for a, b in zip(ordered, ordered[1:]):
-                        ta = datetime.strptime(a.get('timestamp',''), '%Y-%m-%d %H:%M:%S')
-                        tb = datetime.strptime(b.get('timestamp',''), '%Y-%m-%d %H:%M:%S')
+                        ta = datetime.strptime(
+                            a.get('timestamp', ''), '%Y-%m-%d %H:%M:%S')
+                        tb = datetime.strptime(
+                            b.get('timestamp', ''), '%Y-%m-%d %H:%M:%S')
                         gap = tb - ta
                         if gap > max_gap:
                             max_gap = gap
@@ -769,15 +1066,18 @@ class WindowsEventLogSearcher:
                     color_prefix = Fore.GREEN
                 color_suffix = Style.RESET_ALL
 
-            print(f"\n{color_prefix}[{i}] Event ID {event['event_id']} - {event['category']}{color_suffix}")
+            print(
+                f"\n{color_prefix}[{i}] Event ID {event['event_id']} - {event['category']}{color_suffix}")
             print(f"    Time: {event['timestamp']}")
             print(f"    Log: {event['log_name']}")
             print(f"    Level: {event['level']}")
             print(f"    Score: {event.get('score', 0)}")
             print(f"    Source: {event['source']}")
-            print(f"    Computer: {event['computer']}")
+            computer = event.get('computer') or event.get('remote_host') or ''
+            print(f"    Computer: {computer}")
             if event.get('sigma_matches'):
-                print(f"    Sigma: {', '.join(event.get('sigma_matches', []))}")
+                print(
+                    f"    Sigma: {', '.join(event.get('sigma_matches', []))}")
             if event.get('ioc_hits'):
                 print(f"    IOCs: {', '.join(event.get('ioc_hits', []))}")
             print(
@@ -794,9 +1094,11 @@ class WindowsEventLogSearcher:
         max_log = max(len(event['log_name']) for event in self.results)
         max_level = max(len(event['level']) for event in self.results)
         max_source = max(len(event['source']) for event in self.results)
-        max_event_id = max(len(str(event['event_id'])) for event in self.results)
-        max_score = max(len(str(event.get('score', ''))) for event in self.results)
-        
+        max_event_id = max(len(str(event['event_id']))
+                           for event in self.results)
+        max_score = max(len(str(event.get('score', '')))
+                        for event in self.results)
+
         # Set minimum widths and maximum for description
         time_width = max(19, max_time)  # YYYY-MM-DD HH:MM:SS
         log_width = max(8, max_log)
@@ -805,21 +1107,25 @@ class WindowsEventLogSearcher:
         event_id_width = max(8, max_event_id)
         score_width = max(5, max_score, 5)
         desc_width = 50  # Fixed description width
-        
+
         # Print header
         header = f"{'#':<3} {'Time':<{time_width}} {'Log':<{log_width}} {'Level':<{level_width}} {'Score':<{score_width}} {'Event ID':<{event_id_width}} {'Source':<{source_width}} {'Description':<{desc_width}}"
         print(header)
         print("=" * len(header))
-        
+
         # Print data rows
         for i, event in enumerate(self.results, 1):
             # Truncate description if too long
-            description = event['description'][:desc_width-3] + '...' if len(event['description']) > desc_width else event['description']
-            description = description.replace('\n', ' ').replace('\r', ' ')  # Remove newlines
-            
+            description = event['description'][:desc_width-3] + '...' if len(
+                event['description']) > desc_width else event['description']
+            description = description.replace(
+                '\n', ' ').replace('\r', ' ')  # Remove newlines
+
             # Truncate source if too long
-            source = event['source'][:source_width-3] + '...' if len(event['source']) > source_width else event['source']
-            
+            source = event['source'][:source_width-3] + \
+                '...' if len(event['source']
+                             ) > source_width else event['source']
+
             row = f"{i:<3} {event['timestamp']:<{time_width}} {event['log_name']:<{log_width}} {event['level']:<{level_width}} {str(event.get('score', 0)):<{score_width}} {event['event_id']:<{event_id_width}} {source:<{source_width}} {description:<{desc_width}}"
             print(row)
 
@@ -860,7 +1166,8 @@ class WindowsEventLogSearcher:
             reasons.append("Persistence category")
 
         # LOLBins and suspicious tooling
-        lolbins = ['powershell.exe', 'cmd.exe', 'rundll32.exe', 'regsvr32.exe', 'mshta.exe', 'wscript.exe', 'cscript.exe', 'certutil.exe', 'bitsadmin.exe', 'schtasks.exe', 'psexec', 'wmic.exe']
+        lolbins = ['powershell.exe', 'cmd.exe', 'rundll32.exe', 'regsvr32.exe', 'mshta.exe', 'wscript.exe',
+            'cscript.exe', 'certutil.exe', 'bitsadmin.exe', 'schtasks.exe', 'psexec', 'wmic.exe']
         if any(x in process for x in lolbins):
             score += 20
             reasons.append("Suspicious LOLBin process")
@@ -900,22 +1207,26 @@ class WindowsEventLogSearcher:
             for v in self.iocs.get('ips', set()):
                 if v in fields:
                     hits.append(f'ip:{v}')
-                    self.ioc_hits_counter[f'ip:{v}'] = self.ioc_hits_counter.get(f'ip:{v}', 0) + 1
+                    self.ioc_hits_counter[f'ip:{v}'] = self.ioc_hits_counter.get(
+                        f'ip:{v}', 0) + 1
             # Domains
             for v in self.iocs.get('domains', set()):
                 if v in fields:
                     hits.append(f'domain:{v}')
-                    self.ioc_hits_counter[f'domain:{v}'] = self.ioc_hits_counter.get(f'domain:{v}', 0) + 1
+                    self.ioc_hits_counter[f'domain:{v}'] = self.ioc_hits_counter.get(
+                        f'domain:{v}', 0) + 1
             # Hashes (sha1/sha256/md5 substrings)
             for v in self.iocs.get('hashes', set()):
                 if v in fields:
                     hits.append(f'hash:{v[:8]}...')
-                    self.ioc_hits_counter[f'hash:{v}'] = self.ioc_hits_counter.get(f'hash:{v}', 0) + 1
+                    self.ioc_hits_counter[f'hash:{v}'] = self.ioc_hits_counter.get(
+                        f'hash:{v}', 0) + 1
             # Substrings (command lines/artifacts)
             for v in self.iocs.get('substrings', set()):
                 if v in fields:
                     hits.append(f'sub:{v}')
-                    self.ioc_hits_counter[f'sub:{v}'] = self.ioc_hits_counter.get(f'sub:{v}', 0) + 1
+                    self.ioc_hits_counter[f'sub:{v}'] = self.ioc_hits_counter.get(
+                        f'sub:{v}', 0) + 1
         except Exception:
             pass
         return hits
@@ -967,7 +1278,8 @@ class WindowsEventLogSearcher:
                         if str(val).lower() != str(v).lower():
                             ok = False; break
                 if ok:
-                    matches.append(rule.get('title') or rule.get('id') or 'sigma_rule')
+                    matches.append(rule.get('title')
+                                   or rule.get('id') or 'sigma_rule')
                     for t in rule.get('tags', []) or []:
                         tags.add(t)
             except Exception:
@@ -1002,7 +1314,8 @@ class WindowsEventLogSearcher:
                 fields['logon_type'] = m.group(1)
 
             # IP (IPv4/IPv6) - Source Network Address
-            m = re.search(r"Source Network Address:\s*([0-9a-fA-F:\.]+)", description)
+            m = re.search(
+                r"Source Network Address:\s*([0-9a-fA-F:\.]+)", description)
             if m:
                 fields['ip'] = m.group(1).strip()
 
@@ -1370,17 +1683,18 @@ class WindowsEventLogSearcher:
                 win32api.GetCurrentProcess(),
                 win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
             )
-            
+
             # Look up the privilege
-            privilege = win32security.LookupPrivilegeValue(None, "SeSecurityPrivilege")
-            
+            privilege = win32security.LookupPrivilegeValue(
+                None, "SeSecurityPrivilege")
+
             # Enable the privilege
             win32security.AdjustTokenPrivileges(
                 token,
                 False,
                 [(privilege, win32security.SE_PRIVILEGE_ENABLED)]
             )
-            
+
             win32api.CloseHandle(token)
             return True
         except Exception as e:
@@ -1578,25 +1892,25 @@ $totalCount = $logConfigs.Count
 
 foreach ($logName in $logConfigs.Keys) {{
     $regPath = $logConfigs[$logName]
-    
+
     try {{
         Write-Host "Configuring $logName log..." -ForegroundColor Cyan
-        
+
         # Check if registry path exists
         if (Test-Path $regPath) {{
             # Set retention period (in days)
             Set-ItemProperty -Path $regPath -Name "Retention" -Value $Days -Type DWord
-            
+
             # Set maximum log size (in bytes) - use UInt32 to handle large values
             $maxSizeBytes = [UInt32]($MaxSizeMB * 1024 * 1024)
             Set-ItemProperty -Path $regPath -Name "MaxSize" -Value $maxSizeBytes -Type DWord
-            
+
             # Set retention policy
             Set-ItemProperty -Path $regPath -Name "RetentionPolicy" -Value $retentionValue -Type DWord
-            
+
             # Enable auto-backup
             Set-ItemProperty -Path $regPath -Name "AutoBackupLogFiles" -Value 1 -Type DWord
-            
+
             Write-Host "  [OK] $logName log configured successfully" -ForegroundColor Green
             $successCount++
         }} else {{
@@ -1793,12 +2107,14 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
                                 rule = yaml.safe_load(fh)
                                 if isinstance(rule, dict):
                                     sigma_rules.append(rule)
-                print(f"Loaded {len(sigma_rules)} Sigma rule(s) from {args.sigma_dir}")
+                print(
+                    f"Loaded {len(sigma_rules)} Sigma rule(s) from {args.sigma_dir}")
             except Exception as e:
                 print(f"Warning: failed to load Sigma rules: {e}")
 
     # Load IOCs if provided
-    iocs = {'ips': set(), 'domains': set(), 'hashes': set(), 'substrings': set()}
+    iocs = {'ips': set(), 'domains': set(),
+                       'hashes': set(), 'substrings': set()}
     try:
         if getattr(args, 'ioc', None):
             fmt = getattr(args, 'ioc_format', 'csv')
@@ -1811,11 +2127,11 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
                         val = (row.get('value') or '').strip().lower()
                         if not typ or not val:
                             continue
-                        if typ in ('ip','ips'):
+                        if typ in ('ip', 'ips'):
                             iocs['ips'].add(val)
-                        elif typ in ('domain','domains'):
+                        elif typ in ('domain', 'domains'):
                             iocs['domains'].add(val)
-                        elif typ in ('hash','md5','sha1','sha256'):
+                        elif typ in ('hash', 'md5', 'sha1', 'sha256'):
                             iocs['hashes'].add(val)
                         else:
                             iocs['substrings'].add(val)
@@ -1828,7 +2144,7 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
                         # naive classification
                         if any(c.isalpha() for c in val) and '.' in val and not any(ch in val for ch in [' ', '\t']):
                             iocs['domains'].add(val)
-                        elif all(ch in '0123456789abcdef' for ch in val) and len(val) in (32,40,64):
+                        elif all(ch in '0123456789abcdef' for ch in val) and len(val) in (32, 40, 64):
                             iocs['hashes'].add(val)
                         elif all(ch in '0123456789.:abcdef' for ch in val) and any(ch in val for ch in '.:'):
                             iocs['ips'].add(val)
@@ -1837,28 +2153,32 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
             elif fmt == 'stix':
                 with open(args.ioc, 'r', encoding='utf-8', errors='ignore') as f:
                     stix = json.load(f)
-                objs = stix.get('objects', []) if isinstance(stix, dict) else []
+                objs = stix.get('objects', []) if isinstance(
+                    stix, dict) else []
                 for o in objs:
-                    ind = o.get('indicator') or o if isinstance(o, dict) else {}
+                    ind = o.get('indicator') or o if isinstance(
+                        o, dict) else {}
                     patt = ind.get('pattern') or ''
                     val = o.get('name') or ''
                     blob = f"{patt} {val}".lower()
                     # naive extraction
-                    for token in blob.replace("'", ' ').replace('"',' ').split():
+                    for token in blob.replace("'", ' ').replace('"', ' ').split():
                         t = token.strip()
                         if not t:
                             continue
                         if any(c.isalpha() for c in t) and '.' in t and not any(ch in t for ch in [' ', '\t']):
                             iocs['domains'].add(t)
-                        elif all(ch in '0123456789abcdef' for ch in t) and len(t) in (32,40,64):
+                        elif all(ch in '0123456789abcdef' for ch in t) and len(t) in (32, 40, 64):
                             iocs['hashes'].add(t)
                         elif all(ch in '0123456789.:abcdef' for ch in t) and any(ch in t for ch in '.:'):
                             iocs['ips'].add(t)
-            print(f"Loaded IOCs: ips={len(iocs['ips'])}, domains={len(iocs['domains'])}, hashes={len(iocs['hashes'])}, subs={len(iocs['substrings'])}")
+            print(
+                f"Loaded IOCs: ips={len(iocs['ips'])}, domains={len(iocs['domains'])}, hashes={len(iocs['hashes'])}, subs={len(iocs['substrings'])}")
     except Exception as e:
         print(f"Warning: failed to load IOCs: {e}")
 
-    searcher = WindowsEventLogSearcher(sigma_rules=sigma_rules, sigma_boost=getattr(args, 'sigma_boost', 10), iocs=iocs, ioc_boost=getattr(args, 'ioc_boost', 5))
+    searcher = WindowsEventLogSearcher(sigma_rules=sigma_rules, sigma_boost=getattr(
+        args, 'sigma_boost', 10), iocs=iocs, ioc_boost=getattr(args, 'ioc_boost', 5))
 
     if all_events:
         event_ids = []
@@ -1978,12 +2298,14 @@ def output_timeline(events, fmt='jsonl', sessionize='none'):
         for e in sorted_events:
             print(json.dumps(e, default=str))
     else:  # csv
-        headers = ['timestamp', 'session', 'user', 'computer', 'log_name', 'event_id', 'level', 'source', 'category', 'description']
+        headers = ['timestamp', 'session', 'user', 'computer', 'log_name',
+            'event_id', 'level', 'source', 'category', 'description']
         print(','.join(headers))
         for e in sorted_events:
             row = []
             for h in headers:
-                v = str(e.get(h, '')).replace(',', ';').replace('\n', ' ').replace('\r', ' ')
+                v = str(e.get(h, '')).replace(',', ';').replace(
+                    '\n', ' ').replace('\r', ' ')
                 row.append(f'"{v}"')
             print(','.join(row))
 
@@ -2032,10 +2354,10 @@ if __name__ == "__main__":
     parser.add_argument('-o', '--output', type=str,
                         help='Write results to file (UTF-8). Incompatible with --matrix + non-text formats.')
     parser.add_argument(
-        '--level', type=str, choices=['Error', 'Warning', 'Information', 'Critical', 'Verbose'], 
+        '--level', type=str, choices=['Error', 'Warning', 'Information', 'Critical', 'Verbose'],
         help='Filter events by level (Error, Warning, Information, Critical, Verbose)')
     parser.add_argument(
-        '--level-all', type=str, choices=['Error', 'Warning', 'Information', 'Critical', 'Verbose'], 
+        '--level-all', type=str, choices=['Error', 'Warning', 'Information', 'Critical', 'Verbose'],
         help='Search for ALL events of specified level, ignoring Event ID filter')
     parser.add_argument(
         '--levels-all', nargs='+', type=str, choices=['Error', 'Warning', 'Information', 'Critical', 'Verbose'],
@@ -2077,6 +2399,36 @@ if __name__ == "__main__":
                         help='Fetch latest LOLBAS catalog and generate ioc/lolbas_iocs.csv')
     parser.add_argument('--lolbas-url', type=str, default='https://lolbas-project.github.io/api/lolbas.json',
                         help='LOLBAS API URL (default: https://lolbas-project.github.io/api/lolbas.json)')
+    # Multi-host/remote collection
+    parser.add_argument('--hosts', nargs='+', type=str,
+                        help='One or more remote hosts to query (IP addresses or hostnames)')
+    parser.add_argument('--hosts-file', type=str,
+                        help='File containing list of remote hosts (one per line)')
+    parser.add_argument('--timeout', type=int, default=30,
+                        help='Timeout in seconds for remote host connections (default: 30)')
+    parser.add_argument('--parallel-hosts', type=int, default=5,
+                        help='Number of hosts to query in parallel (default: 5)')
+    parser.add_argument('--username', type=str,
+                        help='Username for remote authentication')
+    parser.add_argument('--password', type=str,
+                        help='Password for remote authentication (not recommended - use key-based auth)')
+    parser.add_argument('--domain', type=str,
+                        help='Domain for remote authentication')
+    parser.add_argument('--auth-method', choices=['winrm', 'wmi', 'ssh'], default='winrm',
+                        help='Authentication method for remote hosts (default: winrm)')
+    # SSH remoting options
+    parser.add_argument('--ssh-user', type=str,
+                        help='SSH username for --auth ssh')
+    parser.add_argument('--ssh-key', type=str,
+                        help='Path to SSH private key for --auth ssh')
+    parser.add_argument('--ssh-port', type=int, default=22,
+                        help='SSH port (default: 22)')
+    # WEF
+    parser.add_argument('--wef-endpoint', type=str,
+                        help='Windows Event Forwarding collector hostname/IP (queries ForwardedEvents)')
+    # Remote strict mode
+    parser.add_argument('--strict-remote', action='store_true',
+                        help='Fail if remote collection fails or returns no results; do not fallback to local')
     # Output sinks
     parser.add_argument('--webhook', type=str,
                         help='HTTP endpoint to POST results (JSONL when --format jsonl, JSON otherwise)')
@@ -2094,7 +2446,7 @@ if __name__ == "__main__":
     # IOCs
     parser.add_argument('--ioc', type=str,
                         help='Path to IOC file (CSV/TXT/STIX JSON) containing hashes, IPs, domains, or substrings')
-    parser.add_argument('--ioc-format', type=str, choices=['csv','txt','stix'], default='csv',
+    parser.add_argument('--ioc-format', type=str, choices=['csv', 'txt', 'stix'], default='csv',
                         help='IOC input format (default csv). CSV headers: type,value')
     parser.add_argument('--ioc-boost', type=int, default=5,
                         help='Score boost per IOC match (default 5)')
@@ -2103,14 +2455,22 @@ if __name__ == "__main__":
     parser.add_argument('--suppress', nargs='*',
                         help='Ad-hoc suppress rules like source:Security-SPP eid:4688 user:DOMAIN\\user process:regex desc:regex')
     # Regex-capable field filters
-    parser.add_argument('--user-filter', type=str, help='Regex to match user (e.g., DOMAIN\\user or user)')
-    parser.add_argument('--process-filter', type=str, help='Regex to match process/image path')
-    parser.add_argument('--parent-filter', type=str, help='Regex to match parent process/image')
-    parser.add_argument('--ip-filter', type=str, help='Regex to match source IP address')
-    parser.add_argument('--port-filter', type=str, help='Regex to match source port')
-    parser.add_argument('--logon-type-filter', type=str, help='Regex to match Logon Type value (e.g., 2,3,10)')
-    parser.add_argument('--bool', choices=['and', 'or'], default='and', help='Combine field filters with AND/OR (default AND)')
-    parser.add_argument('--not', dest='negate', action='store_true', help='Negate the combined field filter result (NOT)')
+    parser.add_argument('--user-filter', type=str,
+                        help='Regex to match user (e.g., DOMAIN\\user or user)')
+    parser.add_argument('--process-filter', type=str,
+                        help='Regex to match process/image path')
+    parser.add_argument('--parent-filter', type=str,
+                        help='Regex to match parent process/image')
+    parser.add_argument('--ip-filter', type=str,
+                        help='Regex to match source IP address')
+    parser.add_argument('--port-filter', type=str,
+                        help='Regex to match source port')
+    parser.add_argument('--logon-type-filter', type=str,
+                        help='Regex to match Logon Type value (e.g., 2,3,10)')
+    parser.add_argument('--bool', choices=['and', 'or'], default='and',
+                        help='Combine field filters with AND/OR (default AND)')
+    parser.add_argument('--not', dest='negate', action='store_true',
+                        help='Negate the combined field filter result (NOT)')
 
     args = parser.parse_args()
     # expose args globally for helper access
@@ -2384,6 +2744,19 @@ if __name__ == "__main__":
         sys.exit(0 if success else 1)
 
     try:
+        # Handle remote hosts
+        remote_hosts = []
+        if args.hosts:
+            remote_hosts.extend(args.hosts)
+        if args.hosts_file:
+            try:
+                with open(args.hosts_file, 'r') as f:
+                    file_hosts = [line.strip() for line in f if line.strip()]
+                    remote_hosts.extend(file_hosts)
+            except Exception as e:
+                print(f"Error reading hosts file '{args.hosts_file}': {e}")
+                sys.exit(1)
+        
         # Determine which level filter to use
         if args.levels_all:
             level_filter = set(args.levels_all)
@@ -2393,18 +2766,82 @@ if __name__ == "__main__":
             level_all = bool(args.level_all)
         
         def run_search(quiet=False):
-            search_threat_indicators(
-                hours_back=args.hours,
-                output_format=args.format,
-                specific_categories=args.categories,
-                level_filter=level_filter,
-                level_all=level_all,
-                matrix_format=args.matrix,
-                log_filter=args.log_filter,
-                source_filter=args.source_filter,
-                description_filter=args.description_filter,
-                quiet=quiet
-            )
+            if remote_hosts:
+                # Remote search
+                searcher = WindowsEventLogSearcher(
+                    remote_hosts=remote_hosts,
+                    timeout=args.timeout,
+                    parallel_hosts=args.parallel_hosts,
+                    username=args.username,
+                    password=args.password,
+                    domain=args.domain,
+                    auth_method=args.auth_method
+                )
+                # attach SSH extras if present
+                if args.auth_method == 'ssh':
+                    searcher.ssh_key = args.ssh_key
+                    searcher.ssh_port = args.ssh_port
+                
+                # Get event IDs to search
+                if args.event_ids:
+                    event_ids = args.event_ids
+                elif args.categories:
+                    event_ids = []
+                    for category in args.categories:
+                        if category in EVENTS:
+                            event_ids.extend(EVENTS[category])
+                else:
+                    event_ids = list(ALL_EVENT_IDS) if ALL_EVENT_IDS else []
+                
+                results = searcher.search_remote_hosts(
+                    event_ids=event_ids,
+                    hours_back=args.hours,
+                    output_format=args.format,
+                    level_filter=level_filter,
+                    level_all=level_all,
+                    matrix_format=args.matrix,
+                    log_filter=args.log_filter,
+                    source_filter=args.source_filter,
+                    description_filter=args.description_filter,
+                    quiet=quiet,
+                    field_filters={
+                        'user': args.user_filter,
+                        'process': args.process_filter,
+                        'parent': args.parent_filter,
+                        'ip': args.ip_filter,
+                        'port': args.port_filter,
+                        'logon_type': args.logon_type_filter
+                    },
+                    bool_logic=args.bool,
+                    negate=args.negate,
+                    max_events=args.max_events,
+                    progress=args.progress,
+                    allowlist=args.allowlist,
+                    suppress_rules=args.suppress
+                )
+                
+                # Enforce strict remote behavior
+                if args.strict_remote and not results:
+                    print("Remote collection returned no results or failed. --strict-remote is set; exiting with error.")
+                    sys.exit(2)
+                # Prepare output flags and output results
+                searcher.matrix_format = args.matrix
+                searcher.quiet = quiet
+                searcher._output_results(args.format)
+            else:
+                # Local search
+                search_threat_indicators(
+                    hours_back=args.hours,
+                    output_format=args.format,
+                    specific_categories=args.categories,
+                    level_filter=level_filter,
+                    level_all=level_all,
+                    matrix_format=args.matrix,
+                    log_filter=args.log_filter,
+                    source_filter=args.source_filter,
+                    description_filter=args.description_filter,
+                    quiet=quiet
+                )
 
         if args.output:
             # Inform about matrix/text expectations
@@ -2419,60 +2856,8 @@ if __name__ == "__main__":
                 print(f"Error writing to output file '{args.output}': {e}")
                 sys.exit(1)
         else:
-            if args.timeline:
-                results = search_threat_indicators(
-                    hours_back=args.hours,
-                    output_format=args.format,
-                    specific_categories=args.categories,
-                    level_filter=level_filter,
-                    level_all=level_all,
-                    matrix_format=args.matrix,
-                    log_filter=args.log_filter,
-                    source_filter=args.source_filter,
-                    description_filter=args.description_filter,
-                    field_filters={
-                        'user': args.user_filter,
-                        'process': args.process_filter,
-                        'parent': args.parent_filter,
-                        'ip': args.ip_filter,
-                        'port': args.port_filter,
-                        'logon_type': args.logon_type_filter
-                    },
-                    bool_logic=args.bool,
-                    negate=args.negate,
-                    all_events=args.all_events,
-                    explicit_event_ids=args.event_ids,
-                    quiet=True
-                )
-                # override per-call max_events by setting on searcher before timeline output
-                # (timeline does not requery; this maintains behavior)
-                output_timeline(results, fmt=args.timeline, sessionize=args.sessionize)
-            else:
-                # Single run with printing enabled; progress bars are handled internally
-                search_threat_indicators(
-                    hours_back=args.hours,
-                    output_format=args.format,
-                    specific_categories=args.categories,
-                    level_filter=level_filter,
-                    level_all=level_all,
-                    matrix_format=args.matrix,
-                    log_filter=args.log_filter,
-                    source_filter=args.source_filter,
-                    description_filter=args.description_filter,
-                    field_filters={
-                        'user': args.user_filter,
-                        'process': args.process_filter,
-                        'parent': args.parent_filter,
-                        'ip': args.ip_filter,
-                        'port': args.port_filter,
-                        'logon_type': args.logon_type_filter
-                    },
-                    bool_logic=args.bool,
-                    negate=args.negate,
-                    all_events=args.all_events,
-                    explicit_event_ids=args.event_ids,
-                    quiet=False
-                )
+            # Unified run path (respects remote_hosts if provided)
+            run_search(quiet=False)
 
             # Send results to sinks if requested
             if getattr(args, 'webhook', None) or (getattr(args, 'hec_url', None) and getattr(args, 'hec_token', None)):

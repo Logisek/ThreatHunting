@@ -5,6 +5,7 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 **Important Note**: In enterprise environments, it is recommended to centralize logs in a SIEM and operate within a SOC workflow for alerting, enrichment, and long-term retention. Use this tool for local triage, spot-checking, validation, and rapid investigation on endpoints.
 
 ### Key Features
+
 - Search by curated event IDs grouped into hunting categories
 - Filter by time window, level, log type, source, description, and rich regex field filters (user/process/parent/ip/port/logon-type) with AND/OR/NOT
 - Output in JSON, JSONL (NDJSON), CSV, human-readable text, or matrix view; optional timeline output with sessionization
@@ -14,6 +15,7 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 - Sigma rule matching (load local YAML rules, tag matches, boost scores)
 - IOC-driven hunting (ingest IPs/domains/hashes/substrings; tag matches; boost scores; per-IOC hit summary)
 - LOLBAS integration (auto-download latest LOLBins catalog and generate IOCs for hunting)
+- Multi-host/remote collection (query remote hosts via WinRM/WMI/SSH with parallel collection and timeouts)
 - Offline EVTX parsing (hunt across .evtx files/directories, preserve channel/timestamps)
 - Config management: single/multiple configs, schema validation, merge diffs, and named presets
 - Sinks and integrations: HTTP webhook and Splunk HEC
@@ -82,6 +84,7 @@ Contents of a config JSON:
 ```
 
 Guidance for custom configs:
+
 - Keep categories purpose-driven (e.g., "ransomware_initial", "persistence_services").
 - Favor smaller, high-signal sets for speed; add broader sets during deeper IR.
 - Reuse/extend `config/custom_events.json` as a template.
@@ -93,15 +96,8 @@ All bundled configuration files live in the `config/` folder. These JSON files d
 
 ```json
 {
-  "category_name": [
-    4688,
-    4698,
-    7045
-  ],
-  "another_category": [
-    4624,
-    1102
-  ]
+  "category_name": [4688, 4698, 7045],
+  "another_category": [4624, 1102]
 }
 ```
 
@@ -115,6 +111,7 @@ All bundled configuration files live in the `config/` folder. These JSON files d
 - `config/custom_events.json`: Example file showing how to define your own categories (e.g., `my_custom_category`, `high_priority_events`, `powershell_events`). Use this as a starting template.
 
 New curated configs included:
+
 - `config/sysmon_core.json`: Core Sysmon events (process create, network, image loads, file create, registry, WMI, drivers, code injection, named pipes, DNS) for environments with Sysmon deployed.
 - `config/powershell_deep.json`: PowerShell Operational and Script Block Logging focus (4100/4103/4104 plus common operational IDs), useful for script-based attacks.
 - `config/rdp_remote_access.json`: RDP and remote session telemetry (logon/logoff, session reconnect/disconnect, and TerminalServices events like 1149). Helps trace interactive remote access.
@@ -123,6 +120,7 @@ New curated configs included:
 - `config/network_wfp_anomalies.json`: Windows Filtering Platform allow/deny and related events (5152/5153/5156/5157/5158/5159/5160/5161) to spot suspicious network patterns.
 
 When to use which:
+
 - Quick incident triage on a workstation: `event_ids.json` or `accessible_events.json`.
 - Deep-dive security review: `privilege_escalation.json` (expect volume) or `advanced_events.json` (if Sysmon present).
 - Environment-specific hunts: start from `custom_events.json` and tailor categories/events.
@@ -134,10 +132,12 @@ When to use which:
 This repository includes directories with ready-to-use hunting assets:
 
 - `sigma/`:
+
   - Location for Sigma-style rules. We include starter rules under `sigma/windows/` (e.g., `process_creation.yml`, `log_cleared.yml`, `service_installed.yml`).
   - Use with `--sigma-dir sigma/windows` to tag events locally and boost scores.
 
 - `ioc/`:
+
   - IOC samples for quick testing and demos.
   - `ioc/common_iocs.csv` (CSV headers: `type,value`) supports `ip`, `domain`, `hash`, `substring`.
   - `ioc/common_iocs.txt` simple line-based list; auto-detected type.
@@ -147,8 +147,13 @@ This repository includes directories with ready-to-use hunting assets:
   - Auto-update LOLBins IOCs: `python ThreatHunting.py --update-lolbas-iocs`
 
 - `evtx/`:
+
   - Place sample `.evtx` files here (see `evtx/README.txt`) for offline hunting.
   - Use with `--evtx evtx` to scan the entire directory recursively.
+
+- `hosts.txt` (create as needed):
+  - List of remote hosts for multi-host hunting (one per line).
+  - Use with `--hosts-file hosts.txt` for remote collection.
 
 Quick commands:
 
@@ -170,6 +175,9 @@ python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc
 
 # Offline EVTX hunting (directory)
 python ThreatHunting.py --hours 168 --evtx evtx --all-events --format text --matrix
+
+# Multi-host remote hunting
+python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 192.168.1.11 --username admin --format text --matrix
 ```
 
 ---
@@ -219,14 +227,30 @@ python ThreatHunting.py --hours 168 --evtx evtx --all-events --format text --mat
 - `--evtx <paths>`: One or more .evtx files or directories (recursive) to parse offline.
 - `--update-lolbas-iocs`: Fetch latest LOLBAS catalog and generate ioc/lolbins_iocs.csv.
 - `--lolbas-url <url>`: LOLBAS API URL (default: https://lolbas-project.github.io/api/lolbas.json).
+- `--hosts <hosts>`: One or more remote hosts to query (IP addresses or hostnames).
+- `--hosts-file <file>`: File containing list of remote hosts (one per line).
+- `--timeout <seconds>`: Timeout in seconds for remote host connections (default: 30).
+- `--parallel-hosts <num>`: Number of hosts to query in parallel (default: 5).
+- `--username <user>`: Username for remote authentication.
+- `--password <pass>`: Password for remote authentication (not recommended - use key-based auth).
+- `--domain <domain>`: Domain for remote authentication.
+- `--auth-method {winrm,wmi}`: Authentication method for remote hosts (default: winrm).
+- `--auth-method {winrm,wmi,ssh}`: Authentication method for remote hosts (default: winrm).
+- `--ssh-user <user>`: SSH username for `--auth ssh`.
+- `--ssh-key <path>`: Path to SSH private key for `--auth ssh`.
+- `--ssh-port <int>`: SSH port (default: 22).
+- `--wef-endpoint <host>`: Windows Event Forwarding collector hostname/IP (queries `ForwardedEvents`).
+- `--strict-remote`: Fail if remote collection fails or returns no results; no local fallback.
 - `--sigma-dir <path>`: Directory with Sigma YAML rules to evaluate locally (simple selection support).
 - `--sigma-boost <int>`: Score boost per matched Sigma rule (default 10).
 
 Scoring and triage output:
+
 - Every result includes `score` (0–100) and `risk_reasons` in JSON; text/matrix/CSV include `score`.
 - After results, a triage summary prints Top findings (by score) and counts by category/source.
 
 Rich field filters (regex-capable) and boolean logic:
+
 - `--user-filter <regex>`: Match on resolved user (from event SID when available), e.g., `ACME\\alice` or `^svc_`.
 - `--process-filter <regex>`: Match on process/image name or path, e.g., `powershell\.exe|cmd\.exe`.
 - `--parent-filter <regex>`: Match on parent image, e.g., `explorer\.exe|services\.exe`.
@@ -237,10 +261,12 @@ Rich field filters (regex-capable) and boolean logic:
 - `--not`: Negate the combined result (NOT).
 
 Timeline export and sessionization:
+
 - `--timeline {jsonl,csv}`: Output a chronological timeline in JSON Lines (one JSON object per line) or CSV format.
 - `--sessionize {none,user,host,logon,log}`: Add a derived `session` key to each event and optionally group by user (from event SID), host, logon ID (parsed from description), or log.
 
 Elevation and warnings:
+
 - `--no-admin-warning`: Suppress the non-elevated warning.
 - `--elevate`: If not elevated, re-launch the process with Administrator privileges via UAC.
 
@@ -257,6 +283,7 @@ python ThreatHunting.py --hours 24 --format text --matrix
 ```
 
 Tips:
+
 - Scan with `--categories critical_smoking_gun_indicators` to focus on high-signal events.
 - Add `--level Warning` or `--level Error` to reduce noise.
 
@@ -582,7 +609,7 @@ python ThreatHunting.py --hours 168 --levels-all Information Warning --max-event
 
 ### Incident responder quick recipes
 
-```bash
+````bash
 # Investigate a single user across all logs (matrix, last 48h)
 python ThreatHunting.py --hours 48 --all-events --user-filter "^ACME\\alice$" --format text --matrix
 
@@ -657,7 +684,7 @@ python ThreatHunting.py --update-lolbas-iocs
 
 # Hunt with freshly updated LOLBins IOCs
 python ThreatHunting.py --hours 24 --all-events --ioc ioc/lolbins_iocs.csv --ioc-format csv --format text --matrix
-```
+````
 
 # Offline EVTX hunting across a directory of files (triage bundle)
 
@@ -713,6 +740,51 @@ python ThreatHunting.py --hours 24 --all-events --format json --quiet
 
 # Verbose mode with detailed output
 python ThreatHunting.py --hours 24 --all-events --format text --verbose
+
+# Multi-host/remote collection examples
+
+# Query multiple remote hosts via WinRM
+python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 192.168.1.11 192.168.1.12 --username admin --password secret --format text --matrix
+
+# Query hosts from file with custom timeout and parallel processing
+python ThreatHunting.py --hours 48 --all-events --hosts-file hosts.txt --timeout 60 --parallel-hosts 10 --username domain\\admin --format json
+
+# Remote hunting with WMI authentication
+python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.100 --auth-method wmi --username admin --password secret --format text --matrix
+
+# Remote hunting with SSH key auth (PowerShell 7 + SSH server on hosts)
+python ThreatHunting.py --hours 24 --all-events --hosts 10.0.0.5 10.0.0.6 --auth-method ssh --ssh-user azureuser --ssh-key C:\\Users\\you\\.ssh\\id_ed25519 --ssh-port 22 --format text --matrix
+
+# Enforce strict-remote (no local fallback if remote fails)
+python ThreatHunting.py --hours 1 --all-events --hosts 10.8.200.17 --auth-method ssh --ssh-user azureuser --ssh-key C:\\Users\\you\\.ssh\\id_ed25519 --strict-remote --format text --matrix
+
+# Strict-remote with WinRM
+python ThreatHunting.py --hours 2 --all-events --hosts 192.168.1.50 192.168.1.60 --auth-method winrm --username .\\LocalAdmin --password "StrongP@ss!" --strict-remote --format json
+
+# Strict-remote with WMI
+python ThreatHunting.py --hours 2 --all-events --hosts-file hosts.txt --auth-method wmi --username DOMAIN\\ir --password "Secret" --strict-remote --format text --matrix
+
+# Remote hunting with specific categories and field filtering
+python ThreatHunting.py --hours 24 --categories credential_access,lateral_movement --hosts 192.168.1.10 192.168.1.11 --process-filter "powershell\\.exe" --format json
+
+# Remote hunting with Sigma rules and IOCs
+python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 --sigma-dir sigma/windows --ioc ioc/lolbins_iocs.csv --ioc-format csv --format text --matrix
+
+# Remote hunting with timeline output
+python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 192.168.1.11 --timeline jsonl --sessionize user --format jsonl
+
+# Remote hunting with allowlist suppression
+python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 --allowlist config/allowlist.json --format text --matrix
+
+# Remote hunting with webhook integration
+python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 192.168.1.11 --webhook https://your-webhook.com/endpoint --format jsonl
+
+# Query a central WEF collector (ForwardedEvents)
+python ThreatHunting.py --hours 24 --all-events --wef-endpoint wef-collector.yourcorp.local --format text --matrix
+
+Tips:
+- On Windows paths, escape backslashes in key paths, e.g. `C:\\Users\\you\\.ssh\\id_ed25519`.
+- Verify remote results by checking the Computer column shows the remote host.
 ```
 
 ### Sigma rules examples
@@ -775,6 +847,7 @@ sigma/
 ```
 
 Supported fields in selections (simple local matcher):
+
 - `EventID` or `event_id` (integer equality)
 - `description|contains`, `process|contains`, `source|contains`, `user|contains` (case-insensitive substring)
 - Plain field equality for simple keys (e.g., `log_name: Security`)
@@ -799,6 +872,7 @@ tags:
 ```
 
 Notes and limits:
+
 - This is a lightweight evaluator for quick local tagging, not a full Sigma engine.
 - If you need richer matching (wildcards, multiple selections, 1 of N, etc.), consider pre-compiling rules externally and piping JSONL into the tool or contributing extended logic.
 
@@ -841,95 +915,94 @@ Below is a practical reference for the unique event IDs used across the included
 
 ### Windows Security Log - Authentication and Logon
 
-| Event ID | What it is | Why hunt for it |
-|---|---|---|
-| 4624 | An account was successfully logged on | Baseline logons, pivot by LogonType for network/RDP/service logons, lateral movement |
-| 4625 | An account failed to log on | Password spraying/brute force indicators, failed lateral movement |
-| 4634 | An account was logged off | Session lifecycle correlation with 4624/4648 |
-| 4648 | A logon was attempted using explicit credentials | Pass-the-Hash/Ticket usage, remote exec tools (PsExec/WMI) |
-| 4672 | Special privileges assigned to new logon | Admin-equivalent context; privilege escalation and high-value sessions |
-| 4673–4674 | Sensitive privilege use / Privileged service called | Detection of privilege API usage by processes |
-| 4697 | A service was installed in the system | Persistence, privilege escalation, remote service creation |
-| 4698 | A scheduled task was created | Persistence, living-off-the-land tasking |
-| 4732/4728/4756 | Member added to local/global/universal group | Privilege escalation via group membership changes |
-| 4768/4769/4771 | Kerberos TGT/TGS request/failure | Kerberoasting, clock skew, KDC issues, brute forcing |
-| 4772/4773/4774/4775 | Kerberos auth anomalies | Ticket renewals/failures, policy issues, potential abuse |
-| 4776 | NTLM authentication | Legacy auth, relay risk, brute force indicators |
-| 1102 | The audit log was cleared | High-signal defense evasion |
+| Event ID            | What it is                                          | Why hunt for it                                                                      |
+| ------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 4624                | An account was successfully logged on               | Baseline logons, pivot by LogonType for network/RDP/service logons, lateral movement |
+| 4625                | An account failed to log on                         | Password spraying/brute force indicators, failed lateral movement                    |
+| 4634                | An account was logged off                           | Session lifecycle correlation with 4624/4648                                         |
+| 4648                | A logon was attempted using explicit credentials    | Pass-the-Hash/Ticket usage, remote exec tools (PsExec/WMI)                           |
+| 4672                | Special privileges assigned to new logon            | Admin-equivalent context; privilege escalation and high-value sessions               |
+| 4673–4674           | Sensitive privilege use / Privileged service called | Detection of privilege API usage by processes                                        |
+| 4697                | A service was installed in the system               | Persistence, privilege escalation, remote service creation                           |
+| 4698                | A scheduled task was created                        | Persistence, living-off-the-land tasking                                             |
+| 4732/4728/4756      | Member added to local/global/universal group        | Privilege escalation via group membership changes                                    |
+| 4768/4769/4771      | Kerberos TGT/TGS request/failure                    | Kerberoasting, clock skew, KDC issues, brute forcing                                 |
+| 4772/4773/4774/4775 | Kerberos auth anomalies                             | Ticket renewals/failures, policy issues, potential abuse                             |
+| 4776                | NTLM authentication                                 | Legacy auth, relay risk, brute force indicators                                      |
+| 1102                | The audit log was cleared                           | High-signal defense evasion                                                          |
 
 ### Windows System/Application - Services, Tasks, Registry, Shares
 
-| Event ID | What it is | Why hunt for it |
-|---|---|---|
-| 7040 | Service start type changed | Persistence via autorun service changes |
-| 7045 | A service was installed (System) | Persistence/remote execution, tool staging |
-| 106/140 (Task Scheduler) | Task created/updated | Persistence and scheduled execution |
-| 12/13/14 (Registry) | Registry value/key added/modified | Autoruns, tampering with security controls |
-| 4688 | Process creation | Parent-child anomalies, LOLBins, malware invocations |
-| 4689 | Process termination | Correlate lifetimes, short-lived suspicious processes |
-| 5140/5142/5145 | SMB share accessed/created/object checked | Lateral movement, data staging/exfil over SMB |
-| 4778/4779 | Session reconnect/disconnect | RDP/interactive session tracking |
+| Event ID                 | What it is                                | Why hunt for it                                       |
+| ------------------------ | ----------------------------------------- | ----------------------------------------------------- |
+| 7040                     | Service start type changed                | Persistence via autorun service changes               |
+| 7045                     | A service was installed (System)          | Persistence/remote execution, tool staging            |
+| 106/140 (Task Scheduler) | Task created/updated                      | Persistence and scheduled execution                   |
+| 12/13/14 (Registry)      | Registry value/key added/modified         | Autoruns, tampering with security controls            |
+| 4688                     | Process creation                          | Parent-child anomalies, LOLBins, malware invocations  |
+| 4689                     | Process termination                       | Correlate lifetimes, short-lived suspicious processes |
+| 5140/5142/5145           | SMB share accessed/created/object checked | Lateral movement, data staging/exfil over SMB         |
+| 4778/4779                | Session reconnect/disconnect              | RDP/interactive session tracking                      |
 
 ### PowerShell and Script Execution
 
-| Event ID | What it is | Why hunt for it |
-|---|---|---|
-| 4100 | PowerShell engine lifecycle | Baseline session/activity presence |
-| 4103 | PowerShell module logging | Cmdlet/module usage; detect living-off-the-land |
-| 4104 | PowerShell script block logging | High-signal malicious script content (obfuscation, download cradle) |
-| 53504/53506/53507 | PowerShell operational (newer channels) | Deep telemetry for script operations (if enabled) |
+| Event ID          | What it is                              | Why hunt for it                                                     |
+| ----------------- | --------------------------------------- | ------------------------------------------------------------------- |
+| 4100              | PowerShell engine lifecycle             | Baseline session/activity presence                                  |
+| 4103              | PowerShell module logging               | Cmdlet/module usage; detect living-off-the-land                     |
+| 4104              | PowerShell script block logging         | High-signal malicious script content (obfuscation, download cradle) |
+| 53504/53506/53507 | PowerShell operational (newer channels) | Deep telemetry for script operations (if enabled)                   |
 
 ### Windows Filtering Platform (Network)
 
-| Event ID | What it is | Why hunt for it |
-|---|---|---|
-| 5152/5153 | Packet blocked by filter | Host-based firewall blocks; scanning, failed C2 |
-| 5156 | Connection allowed | Baseline outbound/inbound; unusual destinations/ports |
-| 5157 | Connection blocked | Egress control efficacy; policy tamper attempts |
-| 5158/5159/5160/5161 | Resource assignments and state | Low-level flow diagnostics; advanced network hunting |
+| Event ID            | What it is                     | Why hunt for it                                       |
+| ------------------- | ------------------------------ | ----------------------------------------------------- |
+| 5152/5153           | Packet blocked by filter       | Host-based firewall blocks; scanning, failed C2       |
+| 5156                | Connection allowed             | Baseline outbound/inbound; unusual destinations/ports |
+| 5157                | Connection blocked             | Egress control efficacy; policy tamper attempts       |
+| 5158/5159/5160/5161 | Resource assignments and state | Low-level flow diagnostics; advanced network hunting  |
 
 ### Windows Defender (Microsoft Defender AV)
 
-| Event ID | What it is | Why hunt for it |
-|---|---|---|
-| 1116 | Malware detected | Direct detection signal; pivot to related process/file |
-| 1117 | Remediation action taken | Cleanup actions; verify success and residual indicators |
+| Event ID | What it is               | Why hunt for it                                         |
+| -------- | ------------------------ | ------------------------------------------------------- |
+| 1116     | Malware detected         | Direct detection signal; pivot to related process/file  |
+| 1117     | Remediation action taken | Cleanup actions; verify success and residual indicators |
 
 ### RDP and Remote Access (Terminal Services)
 
-| Event ID | What it is | Why hunt for it |
-|---|---|---|
-| 1149 | Successful RDP logon (TS-Gateway/TermServ) | Trace interactive access, brute force success |
-| 21/24/25 | Session connect/disconnect/reconnect | Account usage patterns, suspicious timing |
+| Event ID | What it is                                 | Why hunt for it                               |
+| -------- | ------------------------------------------ | --------------------------------------------- |
+| 1149     | Successful RDP logon (TS-Gateway/TermServ) | Trace interactive access, brute force success |
+| 21/24/25 | Session connect/disconnect/reconnect       | Account usage patterns, suspicious timing     |
 
 ### Sysmon (if deployed)
 
-| Event ID | What it is | Why hunt for it |
-|---|---|---|
-| 1 | Process creation | Parent-child chains, command-lines, LOLBins |
-| 2 | File creation time changed | Timestomping detection |
-| 3 | Network connection | Outbound C2, lateral movement, rare destinations |
-| 4 | Sysmon service state changed | Tamper and defense evasion |
-| 5 | Process terminated | Lifecycle correlation with Event ID 1 |
-| 6 | Driver loaded | Kernel-mode implants, unsigned drivers |
-| 7 | Image loaded | Malicious DLLs, injection indicators |
-| 8 | CreateRemoteThread | Code injection between processes |
-| 9 | Raw disk access | Ransomware behavior, low-level tampering |
-| 10 | Process access (e.g., lsass.exe) | Credential theft tooling (Mimikatz, etc.) |
-| 11 | File created | Payload drops, staging |
-| 12/13/14 | Registry add/delete/set | Autoruns and tampering |
-| 15 | File stream created | ADS usage for stealth |
-| 16 | Sysmon configuration change | Tamper and logging gaps |
-| 17/18 | Pipe created/connected | Lateral tools, inter-process comms |
-| 19/20/21/22/23/24/25 | WMI event activity | Remote exec, persistence via WMI |
+| Event ID             | What it is                       | Why hunt for it                                  |
+| -------------------- | -------------------------------- | ------------------------------------------------ |
+| 1                    | Process creation                 | Parent-child chains, command-lines, LOLBins      |
+| 2                    | File creation time changed       | Timestomping detection                           |
+| 3                    | Network connection               | Outbound C2, lateral movement, rare destinations |
+| 4                    | Sysmon service state changed     | Tamper and defense evasion                       |
+| 5                    | Process terminated               | Lifecycle correlation with Event ID 1            |
+| 6                    | Driver loaded                    | Kernel-mode implants, unsigned drivers           |
+| 7                    | Image loaded                     | Malicious DLLs, injection indicators             |
+| 8                    | CreateRemoteThread               | Code injection between processes                 |
+| 9                    | Raw disk access                  | Ransomware behavior, low-level tampering         |
+| 10                   | Process access (e.g., lsass.exe) | Credential theft tooling (Mimikatz, etc.)        |
+| 11                   | File created                     | Payload drops, staging                           |
+| 12/13/14             | Registry add/delete/set          | Autoruns and tampering                           |
+| 15                   | File stream created              | ADS usage for stealth                            |
+| 16                   | Sysmon configuration change      | Tamper and logging gaps                          |
+| 17/18                | Pipe created/connected           | Lateral tools, inter-process comms               |
+| 19/20/21/22/23/24/25 | WMI event activity               | Remote exec, persistence via WMI                 |
 
 ### Other and Category Placeholders
 
-| Event ID | What it is | Why hunt for it |
-|---|---|---|
-| 400/403/600 | Provider-specific placeholders used in configs | Treat as hints to inspect provider channels relevant to execution/remoting |
-| 1000–1050 (Application) | Common application crash/errors | Unusual instability tied to attack tooling |
-| 6005/6006/6008/6009 (System) | Event log service start/stop; unexpected shutdown; OS version | Establish uptime and suspicious reboots |
-| 6011–6050 (System) | System telemetry sequence | Operational context; correlate with attack timelines |
-| 4673–5000 (Security, broad range) | Detailed privilege/use-of-rights and audit events | Exhaustive reviews during deep IR; pivot selectively by activity
-
+| Event ID                          | What it is                                                    | Why hunt for it                                                            |
+| --------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| 400/403/600                       | Provider-specific placeholders used in configs                | Treat as hints to inspect provider channels relevant to execution/remoting |
+| 1000–1050 (Application)           | Common application crash/errors                               | Unusual instability tied to attack tooling                                 |
+| 6005/6006/6008/6009 (System)      | Event log service start/stop; unexpected shutdown; OS version | Establish uptime and suspicious reboots                                    |
+| 6011–6050 (System)                | System telemetry sequence                                     | Operational context; correlate with attack timelines                       |
+| 4673–5000 (Security, broad range) | Detailed privilege/use-of-rights and audit events             | Exhaustive reviews during deep IR; pivot selectively by activity           |
