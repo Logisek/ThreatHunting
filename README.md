@@ -1006,3 +1006,46 @@ Below is a practical reference for the unique event IDs used across the included
 | 6005/6006/6008/6009 (System)      | Event log service start/stop; unexpected shutdown; OS version | Establish uptime and suspicious reboots                                    |
 | 6011–6050 (System)                | System telemetry sequence                                     | Operational context; correlate with attack timelines                       |
 | 4673–5000 (Security, broad range) | Detailed privilege/use-of-rights and audit events             | Exhaustive reviews during deep IR; pivot selectively by activity           |
+
+### Additional high-signal account change events (Security)
+
+| Event ID | What it is                 | Why hunt for it                                  |
+| -------- | -------------------------- | ------------------------------------------------ |
+| 4720     | User account created       | Unauthorized local admin creation; staging users |
+| 4726     | User account deleted       | Covering tracks; suspicious cleanup              |
+| 4738     | User account changed       | Privilege/tamper of user properties              |
+| 4767     | Account unlocked           | Brute-force recovery; suspicious unlock patterns |
+
+### Windows Logon Type reference (Security 4624/4625)
+
+| Logon Type | Meaning           |
+| ---------- | ----------------- |
+| 2          | Interactive       |
+| 3          | Network           |
+| 4          | Batch             |
+| 5          | Service           |
+| 7          | Unlock            |
+| 8          | NetworkCleartext  |
+| 9          | NewCredentials    |
+| 10         | RemoteInteractive |
+| 11         | CachedInteractive |
+
+### Common LOLBins and suspicious flags (execution/defense evasion)
+
+| Binary         | Suspicious flags/patterns                       |
+| -------------- | ----------------------------------------------- |
+| powershell.exe | -enc, IEX, DownloadString, AMSI bypass keywords |
+| regsvr32.exe   | /s scrobj.dll                                   |
+| rundll32.exe   | javascript:, unusual DLL exports                |
+| mshta.exe      | http/https scriptlets                           |
+| certutil.exe   | -urlcache -f, -decode                           |
+| bitsadmin.exe  | /transfer                                       |
+
+### Remote collection authentication quick matrix
+
+| Auth/Account type           | WinRM | WMI | SSH (PS7+SSHD) | Notes                                           |
+| --------------------------- | ----- | --- | -------------- | ----------------------------------------------- |
+| Local admin (user+password) | Yes   | Yes | Yes            | Recommended baseline                            |
+| Domain account              | Yes   | Yes | Yes            | Works on domain/hybrid joined                   |
+| AzureAD user + PIN (Hello)  | No    | No  | Keys only      | Use SSH keys or cert-mapped WinRM HTTPS         |
+| AzureAD user + certificate  | HTTPS | No  | Keys           | WinRM HTTPS with client cert mapping required   |
