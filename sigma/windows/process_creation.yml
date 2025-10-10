@@ -1,0 +1,17 @@
+title: Suspicious LOLBin Process Creation
+id: win_proc_lolbin_001
+description: Detects use of LOLBins at process creation
+status: stable
+author: IR Team
+logsource:
+  product: windows
+  service: security
+  definition: Event ID 4688
+detection:
+  selection:
+    EventID: 4688
+    process|contains: powershell.exe
+  condition: selection
+tags:
+  - attack.execution
+  - attack.t1059

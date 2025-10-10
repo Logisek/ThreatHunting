@@ -2,3 +2,4 @@ pywin32>=305
 tqdm>=4.66
 requests>=2.31
 colorama>=0.4
+PyYAML>=6.0

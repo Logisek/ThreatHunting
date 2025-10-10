@@ -1,0 +1,16 @@
+title: Security Log Cleared
+id: win_sec_log_cleared_1102
+description: Detects clearing of the Security event log
+status: stable
+author: IR Team
+logsource:
+  product: windows
+  service: security
+  definition: Event ID 1102
+detection:
+  selection:
+    EventID: 1102
+  condition: selection
+tags:
+  - attack.defense_evasion
+  - attack.t1070

@@ -16,6 +16,10 @@ import ctypes
 import re
 import json as _json
 try:
+    import yaml
+except Exception:
+    yaml = None
+try:
     import requests
 except Exception:
     requests = None
@@ -187,9 +191,11 @@ ALL_EVENT_IDS = None
 
 
 class WindowsEventLogSearcher:
-    def __init__(self):
+    def __init__(self, sigma_rules=None, sigma_boost=10):
         self.logs = ['Application', 'Security', 'Setup', 'System']
         self.results = []
+        self.sigma_rules = sigma_rules or []
+        self.sigma_boost = sigma_boost
 
     def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, concurrency=1, progress=False, allowlist=None, suppress_rules=None):
         """
@@ -432,6 +438,14 @@ class WindowsEventLogSearcher:
             event_data['score'] = score
             event_data['risk_reasons'] = reasons
 
+            # Sigma matching
+            if self.sigma_rules:
+                matches, tags = self._apply_sigma_rules(event_data)
+                if matches:
+                    event_data['sigma_matches'] = matches
+                    event_data['sigma_tags'] = sorted(list(tags))
+                    event_data['score'] = event_data.get('score', 0) + self.sigma_boost * len(matches)
+
             # Apply field filters if provided
             if self._matches_field_filters(event_data) and not self._is_suppressed(event_data):
                 self.results.append(event_data)
@@ -663,6 +677,8 @@ class WindowsEventLogSearcher:
             print(f"    Score: {event.get('score', 0)}")
             print(f"    Source: {event['source']}")
             print(f"    Computer: {event['computer']}")
+            if event.get('sigma_matches'):
+                print(f"    Sigma: {', '.join(event.get('sigma_matches', []))}")
             print(
                 f"    Description: {event['description'][:200]}{'...' if len(event['description']) > 200 else ''}")
             print("-" * 60)
@@ -769,6 +785,49 @@ class WindowsEventLogSearcher:
         if score > 100:
             score = 100
         return score, reasons
+
+    def _apply_sigma_rules(self, e):
+        """Very lightweight Sigma-like matcher for simple selections.
+        Supports keys: event_id, source|contains, description|contains, process|contains, user|contains.
+        condition must be 'selection' (single selection dict).
+        Returns (matches_titles, tags_set)
+        """
+        matches = []
+        tags = set()
+        for rule in self.sigma_rules:
+            try:
+                detection = rule.get('detection') or {}
+                condition = detection.get('condition')
+                if condition != 'selection':
+                    continue
+                sel = detection.get('selection') or {}
+                ok = True
+                for k, v in sel.items():
+                    k_l = k.lower()
+                    if k_l == 'eventid' or k_l == 'event_id':
+                        try:
+                            if int(e.get('event_id', 0)) != int(v):
+                                ok = False
+                                break
+                        except Exception:
+                            ok = False; break
+                    elif '|contains' in k_l:
+                        field = k_l.split('|contains')[0]
+                        val = (e.get(field) or '')
+                        if v is None or str(v).lower() not in str(val).lower():
+                            ok = False; break
+                    else:
+                        # equality on simple mapped fields
+                        val = (e.get(k_l) or '')
+                        if str(val).lower() != str(v).lower():
+                            ok = False; break
+                if ok:
+                    matches.append(rule.get('title') or rule.get('id') or 'sigma_rule')
+                    for t in rule.get('tags', []) or []:
+                        tags.add(t)
+            except Exception:
+                continue
+        return matches, tags
 
     def _extract_enrichments(self, description):
         """Extract common fields from description using heuristics/regex."""
@@ -1574,7 +1633,26 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
         source_filter (str): Filter results where source contains this string
         description_filter (str): Filter results where description contains this string
     """
-    searcher = WindowsEventLogSearcher()
+    # Load Sigma rules if requested
+    sigma_rules = []
+    if getattr(args, 'sigma_dir', None):
+        if yaml is None:
+            print("Warning: PyYAML not installed; cannot load Sigma rules.")
+        else:
+            try:
+                for root, _, files in os.walk(args.sigma_dir):
+                    for f in files:
+                        if f.lower().endswith(('.yml', '.yaml')):
+                            path = os.path.join(root, f)
+                            with open(path, 'r', encoding='utf-8') as fh:
+                                rule = yaml.safe_load(fh)
+                                if isinstance(rule, dict):
+                                    sigma_rules.append(rule)
+                print(f"Loaded {len(sigma_rules)} Sigma rule(s) from {args.sigma_dir}")
+            except Exception as e:
+                print(f"Warning: failed to load Sigma rules: {e}")
+
+    searcher = WindowsEventLogSearcher(sigma_rules=sigma_rules, sigma_boost=getattr(args, 'sigma_boost', 10))
 
     if all_events:
         event_ids = []
@@ -1793,6 +1871,11 @@ if __name__ == "__main__":
                         help='Splunk HEC token')
     parser.add_argument('--sink-batch', type=int, default=500,
                         help='Sink batch size (default 500)')
+    # Sigma
+    parser.add_argument('--sigma-dir', type=str,
+                        help='Directory with Sigma YAML rules to load and evaluate locally')
+    parser.add_argument('--sigma-boost', type=int, default=10,
+                        help='Score boost per matched Sigma rule (default 10)')
     parser.add_argument('--allowlist', type=str,
                         help='Path to JSON allowlist file to suppress known/expected activity (event_ids, sources, users, process_regex, description_regex)')
     parser.add_argument('--suppress', nargs='*',

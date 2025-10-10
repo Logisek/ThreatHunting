@@ -1,0 +1,16 @@
+title: Suspicious Service Installed
+id: win_sys_service_installed_7045
+description: Detects installation of a new service which may indicate persistence
+status: stable
+author: IR Team
+logsource:
+  product: windows
+  service: system
+  definition: Event ID 7045
+detection:
+  selection:
+    EventID: 7045
+  condition: selection
+tags:
+  - attack.persistence
+  - attack.t1543

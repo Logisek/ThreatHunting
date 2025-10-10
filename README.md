@@ -11,6 +11,7 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 - Concurrency and progress bars for faster multi-log scanning; unlimited or capped events with --max-events
 - Risk scoring for each event + triage summaries (Top findings, category/source heatmaps)
 - Tamper and health checks (log clears, policy changes, service stops, time skew, large gaps)
+- Sigma rule matching (load local YAML rules, tag matches, boost scores)
 - Config management: single/multiple configs, schema validation, merge diffs, and named presets
 - Sinks and integrations: HTTP webhook and Splunk HEC
 - Quick checks for log availability coverage and retention settings
@@ -39,7 +40,7 @@ pip install -r requirements.txt
 Or install manually:
 
 ```bash
-pip install pywin32 tqdm requests colorama
+pip install pywin32 tqdm requests colorama PyYAML
 ```
 
 Run from project directory:
@@ -163,6 +164,8 @@ When to use which:
 - `--webhook <url>`: POST results to an HTTP endpoint (JSONL for `--format jsonl`, otherwise JSON batches).
 - `--hec-url <url>` and `--hec-token <token>`: Send results to Splunk HEC.
 - `--sink-batch <int>`: Batch size for sink posts.
+- `--sigma-dir <path>`: Directory with Sigma YAML rules to evaluate locally (simple selection support).
+- `--sigma-boost <int>`: Score boost per matched Sigma rule (default 10).
 
 Scoring and triage output:
 - Every result includes `score` (0–100) and `risk_reasons` in JSON; text/matrix/CSV include `score`.
@@ -516,10 +519,122 @@ python ThreatHunting.py --configs config/baseline.json config/org_overrides.json
 
 ```bash
 # Unlimited scan with 4 workers and progress bars (requires tqdm)
-python ThreatHunting.py --hours 72 --all-events --max-events 0 --process-filter "explorer\\.exe" --concurrency 4 --progress --format text --matrix
+python ThreatHunting.py --hours 72 --all-events --max-events 0 --process-filter "explorer\.exe" --concurrency 4 --progress --format text --matrix
 
 # Cap at 50k per-log with levels and JSON output
 python ThreatHunting.py --hours 168 --levels-all Information Warning --max-events 50000 --concurrency 4 --progress --format json
+```
+
+### Incident responder quick recipes
+
+```bash
+# Investigate a single user across all logs (matrix, last 48h)
+python ThreatHunting.py --hours 48 --all-events --user-filter "^ACME\\alice$" --format text --matrix
+
+# Per-user timeline (JSONL) and sessionize by user
+python ThreatHunting.py --hours 24 --all-events --timeline jsonl --sessionize user > user_timeline.jsonl
+
+# Kerberos anomalies with possible lateral movement source IPs
+python ThreatHunting.py --hours 24 --event-ids 4768 4769 4771 4772 4773 4775 --ip-filter "^10\.10\." --format text
+
+# Service persistence (7045) with suspicious parents (sc.exe/services.exe)
+python ThreatHunting.py --hours 72 --event-ids 7045 --parent-filter "sc\.exe|services\.exe" --format text --matrix
+
+# Scheduled task creation and modification (4698 + Task Scheduler 106/140)
+python ThreatHunting.py --hours 72 --event-ids 4698 106 140 --format json
+
+# PowerShell/WMI execution bursts, sessionized by host
+python ThreatHunting.py --hours 12 --categories execution_and_defense_evasion --timeline csv --sessionize host > exec_bursts.csv
+
+# All Information-level Security events mentioning LSASS in General text
+python ThreatHunting.py --hours 24 --log-filter Security --levels-all Information --description-filter "lsass" --format text
+
+# SMB share activity (staging/exfil) constrained to svc_ accounts
+python ThreatHunting.py --hours 24 --event-ids 5140 5142 5145 --user-filter "^svc_" --format json
+
+# RDP session tracking with RFC1918 IPs
+python ThreatHunting.py --hours 48 --event-ids 21 24 25 1149 --ip-filter "^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)" --format text
+
+# Ship JSONL for Security log errors with allowlist applied
+python ThreatHunting.py --hours 24 --log-filter Security --levels-all Error --allowlist config/allowlist.json --format jsonl > security_errors.jsonl
+
+# Sigma-driven triage: LOLBins + timeline by logon session
+python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --sigma-boost 10 --timeline jsonl --sessionize logon > sigma_sessions.jsonl
+
+# High-volume scan with concurrency and noise suppression (source suppression)
+python ThreatHunting.py --hours 168 --all-events --max-events 30000 --concurrency 4 --suppress source:Security-SPP --format text --matrix
+
+# Focused lookback for log tamper signals
+python ThreatHunting.py --hours 7 --event-ids 1102 1101 1100 4719 --format text
+```
+
+### Sigma rules examples
+
+```bash
+# Load local Sigma rules folder and boost scores for matches
+python ThreatHunting.py --hours 48 --all-events --sigma-dir sigma/windows --sigma-boost 15 --format text --matrix
+
+# Combine Sigma with explicit Event IDs and ship matches via JSONL webhook
+python ThreatHunting.py --hours 24 --event-ids 4688 7045 1102 --sigma-dir sigma/windows --format jsonl --webhook https://example.org/hook
+
+# Use Sigma alongside allowlist suppression to reduce noise
+python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --allowlist config/allowlist.json --format json
+```
+
+### Sigma rules (authoring and organization)
+
+Folder layout:
+
+```
+sigma/
+  windows/
+    process_creation.yml
+    log_cleared.yml
+    service_installed.yml
+```
+
+Supported fields in selections (simple local matcher):
+- `EventID` or `event_id` (integer equality)
+- `description|contains`, `process|contains`, `source|contains`, `user|contains` (case-insensitive substring)
+- Plain field equality for simple keys (e.g., `log_name: Security`)
+
+Detection block must use a single selection with `condition: selection`.
+Example rule (detect LOLBins at process creation):
+
+```yaml
+title: Suspicious LOLBin Process Creation
+id: win_proc_lolbin_001
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4688
+    process|contains: powershell.exe
+  condition: selection
+tags:
+  - attack.execution
+  - attack.t1059
+```
+
+Notes and limits:
+- This is a lightweight evaluator for quick local tagging, not a full Sigma engine.
+- If you need richer matching (wildcards, multiple selections, 1 of N, etc.), consider pre-compiling rules externally and piping JSONL into the tool or contributing extended logic.
+
+Additional Sigma usage examples:
+
+```bash
+# Only tag (no score change): set boost to 0 to avoid inflating scores
+python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --sigma-boost 0 --format text --matrix
+
+# Sigma + timeline to sequence matched activity
+python ThreatHunting.py --hours 24 --all-events --sigma-dir sigma/windows --timeline jsonl --sessionize user
+
+# Ship only Sigma-matched events by filtering at sink (JSONL with webhook); use allowlist to reduce noise
+python ThreatHunting.py --hours 12 --all-events --sigma-dir sigma/windows --format jsonl --webhook https://example.org/hook --allowlist config/allowlist.json
+
+# Combine Sigma with multi-level search and process filter
+python ThreatHunting.py --hours 48 --levels-all Information Warning --process-filter "rundll32\.exe|regsvr32\.exe" --sigma-dir sigma/windows --format text --matrix
 ```
 
 ---
