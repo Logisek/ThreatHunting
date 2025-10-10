@@ -43,6 +43,49 @@ def load_event_ids_from_json(json_file_path):
         print(
             f"Error: Event ID configuration file not found: {json_file_path}")
         return None
+def validate_config_schema(cfg):
+    """Validate that cfg is a mapping of category -> list[int]."""
+    if not isinstance(cfg, dict):
+        return False, "Config root must be an object mapping categories to lists."
+    for cat, ids in cfg.items():
+        if not isinstance(cat, str):
+            return False, f"Invalid category name type: {type(cat)}"
+        if not isinstance(ids, list):
+            return False, f"Category '{cat}' must map to a list of integers."
+        for eid in ids:
+            if not isinstance(eid, int):
+                return False, f"Category '{cat}' contains non-integer event id: {repr(eid)}"
+    return True, None
+
+def merge_configs_with_diff(base_cfg, override_cfg):
+    """Merge override_cfg into base_cfg. Return (merged, diff) where diff describes added cats/ids."""
+    merged = {k: list(v) for k, v in (base_cfg or {}).items()}
+    diff = { 'new_categories': [], 'updated_categories': {} }
+    for cat, ids in (override_cfg or {}).items():
+        ids_set = set(ids)
+        if cat not in merged:
+            merged[cat] = sorted(ids_set)
+            diff['new_categories'].append(cat)
+        else:
+            before = set(merged[cat])
+            added = ids_set - before
+            if added:
+                merged[cat] = sorted(before | ids_set)
+                diff['updated_categories'][cat] = sorted(added)
+    return merged, diff
+
+def print_config_diff(diff, quiet=False):
+    if quiet:
+        return
+    try:
+        if diff.get('new_categories'):
+            print("Added categories:", ', '.join(diff['new_categories']))
+        if diff.get('updated_categories'):
+            print("Updated categories (added Event IDs):")
+            for cat, added in diff['updated_categories'].items():
+                print(f"  {cat}: +{len(added)} -> {added[:10]}{'...' if len(added) > 10 else ''}")
+    except Exception:
+        pass
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in configuration file: {e}")
         return None
@@ -1616,6 +1659,10 @@ if __name__ == "__main__":
                         help='Open both Event Viewer and Log directory')
     parser.add_argument(
         '--config', type=str, help='Path to JSON configuration file with custom Event IDs')
+    parser.add_argument('--configs', nargs='+', type=str,
+                        help='Multiple configuration files to merge (base to last is override order)')
+    parser.add_argument('--preset', type=str,
+                        help='Named preset (e.g., accessible, advanced, privilege, event_ids) resolves to config/<name>.json')
     parser.add_argument('--event-ids', nargs='+', type=int,
                         help='Explicit Event ID list to search (overrides categories unless --all-events is used)')
     parser.add_argument('-o', '--output', type=str,
@@ -1689,13 +1736,54 @@ if __name__ == "__main__":
         print("Error: --matrix is incompatible with --format json/csv. Use --format text or omit --matrix.")
         sys.exit(2)
 
-    # Load Event IDs configuration
-    if args.config:
-        EVENTS = load_event_ids_from_json(args.config)
-        if EVENTS is None:
-            print("Falling back to default Event IDs...")
-            EVENTS = get_default_events()
-    else:
+    # Load Event IDs configuration (single/multiple/preset)
+    EVENTS = None
+    loaded_paths = []
+    if args.preset:
+        preset_map = {
+            'accessible': os.path.join('config', 'accessible_events.json'),
+            'advanced': os.path.join('config', 'advanced_events.json'),
+            'common': os.path.join('config', 'common_events.json'),
+            'privilege': os.path.join('config', 'privilege_escalation.json'),
+            'simple_privilege': os.path.join('config', 'simple_privilege.json'),
+            'event_ids': os.path.join('config', 'event_ids.json'),
+            'custom': os.path.join('config', 'custom_events.json')
+        }
+        resolved = preset_map.get(args.preset.lower())
+        if resolved and os.path.exists(resolved):
+            cfg = load_event_ids_from_json(resolved)
+            ok, err = validate_config_schema(cfg) if cfg else (False, 'Invalid/empty config')
+            if ok:
+                EVENTS = cfg
+                loaded_paths.append(resolved)
+            else:
+                print(f"Preset '{args.preset}' failed schema validation: {err}")
+        else:
+            print(f"Preset '{args.preset}' not recognized or file not found.")
+
+    if args.config and not EVENTS:
+        cfg = load_event_ids_from_json(args.config)
+        ok, err = validate_config_schema(cfg) if cfg else (False, 'Invalid/empty config')
+        if ok:
+            EVENTS = cfg
+            loaded_paths.append(args.config)
+        else:
+            print(f"Config '{args.config}' failed schema validation: {err}")
+
+    if args.configs:
+        merged = EVENTS or {}
+        for path in args.configs:
+            cfg = load_event_ids_from_json(path)
+            ok, err = validate_config_schema(cfg) if cfg else (False, 'Invalid/empty config')
+            if ok:
+                merged, diff = merge_configs_with_diff(merged, cfg)
+                print_config_diff(diff, quiet=False)
+                loaded_paths.append(path)
+            else:
+                print(f"Config '{path}' failed schema validation: {err}")
+        EVENTS = merged if merged else EVENTS
+
+    if not EVENTS:
         EVENTS = get_default_events()
     
     # Calculate all unique Event IDs

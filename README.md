@@ -130,6 +130,8 @@ When to use which:
 - `--open-log-directory`: Open the Windows Event Log directory in Explorer.
 - `--open-both`: Open both Event Viewer and the log directory.
 - `--config <path>`: Load event IDs/categories from a JSON file.
+- `--configs <list>`: Provide multiple config files to merge (later files override earlier). Prints diffs of added categories/IDs.
+- `--preset <name>`: Use a named preset from `config/` (accessible, advanced, common, privilege, simple_privilege, event_ids, custom).
 - `--event-ids <list>`: Explicit Event IDs to search (e.g., `--event-ids 1066 7045 4688`). Overrides categories (unless `--all-events`).
 - `-o, --output <path>`: Write results to a UTF‑8 file. For matrix view, format is treated as text.
 - `--level {Error,Warning,Information,Critical,Verbose}`: Filter by event level.
@@ -489,6 +491,12 @@ python ThreatHunting.py --hours 24 --all-events --format jsonl --webhook https:/
 
 # Send to Splunk HEC
 python ThreatHunting.py --hours 24 --event-ids 4688 4698 --format jsonl --hec-url https://splunk:8088/services/collector --hec-token YOUR_TOKEN
+
+# Config management: start from a preset, then merge two custom layers
+python ThreatHunting.py --preset event_ids --configs config/custom_events.json config/advanced_events.json --hours 48 --format text
+
+# Config management: merge baseline + org overrides (no preset)
+python ThreatHunting.py --configs config/baseline.json config/org_overrides.json --hours 72 --format json
 ```
 
 ### Performance and progress examples
