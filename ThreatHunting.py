@@ -2325,8 +2325,15 @@ def show_logisek_banner():
                                                                       
 """
     
-    print(ascii_art)
-    print("  ThreatHunting v1.0")
+    # Print ASCII art in DarkMagenta
+    try:
+        from colorama import Fore, Style
+        print(f"{Fore.MAGENTA}{ascii_art}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}  ThreatHunting v1.0{Style.RESET_ALL}")
+    except ImportError:
+        # Fallback to regular print if colorama not available
+        print(ascii_art)
+    
     print("  GNU General Public License v3.0")
     print("  https://logisek.com")
     print("  info@logisek.com")
