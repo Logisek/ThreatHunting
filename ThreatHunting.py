@@ -2345,6 +2345,7 @@ if __name__ == "__main__":
             import io
             import contextlib
             
+            
             banner_output = io.StringIO()
             with contextlib.redirect_stdout(banner_output):
                 show_logisek_banner()
