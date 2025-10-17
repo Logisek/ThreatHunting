@@ -925,8 +925,9 @@ class WindowsEventLogSearcher:
             print("\nTop findings (by score):")
             print("-" * 80)
             for i, e in enumerate(top, 1):
+                description_clean = e['description'][:80].replace('\n', ' ')
                 print(
-                    f"{i:>2}. [{e.get('score', 0)}] EID {e['event_id']} {e['log_name']} {e['source']} - {e['timestamp']} :: {e['description'][:80].replace('\n', ' ')}")
+                    f"{i:>2}. [{e.get('score', 0)}] EID {e['event_id']} {e['log_name']} {e['source']} - {e['timestamp']} :: {description_clean}")
 
             # Heatmaps/counts by category and source
             from collections import Counter
@@ -2310,11 +2311,50 @@ def output_timeline(events, fmt='jsonl', sessionize='none'):
             print(','.join(row))
 
 
+def show_logisek_banner():
+    """Display the LOGISEK banner with ASCII art and information."""
+    print("")
+    
+    # LOGISEK ASCII Art
+    ascii_art = """
+                                                                      
+         _____   ______ _____ _______ _______ _     _
+ |      |     | |  ____   |   |______ |______ |____/ 
+ |_____ |_____| |_____| __|__ ______| |______ |    \_
+                                                                  
+                                                                      
+"""
+    
+    print(ascii_art)
+    print("  ThreatHunting v1.0")
+    print("  GNU General Public License v3.0")
+    print("  https://logisek.com")
+    print("  info@logisek.com")
+    print("")
+    print("")
+
+
 if __name__ == "__main__":
     import argparse
+    import sys
+
+    # Custom help formatter to show banner
+    class BannerHelpFormatter(argparse.HelpFormatter):
+        def format_help(self):
+            # Capture the banner output
+            import io
+            import contextlib
+            
+            banner_output = io.StringIO()
+            with contextlib.redirect_stdout(banner_output):
+                show_logisek_banner()
+            
+            help_text = super().format_help()
+            return banner_output.getvalue() + help_text
 
     parser = argparse.ArgumentParser(
-        description='Windows Event Log Threat Hunting Tool')
+        description='Windows Event Log Threat Hunting Tool',
+        formatter_class=BannerHelpFormatter)
     parser.add_argument('--hours', type=int, default=24,
                         help='Hours to look back (default: 24)')
     parser.add_argument(
@@ -2475,6 +2515,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # expose args globally for helper access
     globals()['args'] = args
+
+    # Show LOGISEK banner for all executions (except help)
+    show_logisek_banner()
 
     # Validate incompatible flags
     if args.matrix and args.format in ['json', 'csv']:
