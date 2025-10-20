@@ -3370,10 +3370,24 @@ def analyze_hunt_queries(results, config):
     return matched_queries
 
 
-def print_compromise_analysis(results, detected_chains, likelihood, config, export_events=False, output_file=None):
-    """Print detailed compromise analysis (scoped strictly to selected date/hour window)."""
+def print_compromise_analysis(results, detected_chains, likelihood, config, export_events=False, output_file=None, raw_results=None):
+    """Print detailed compromise analysis (scoped strictly to selected date/hour window).
+    
+    Args:
+        results: Deduplicated results (for display/export)
+        detected_chains: Detected attack chains
+        likelihood: Compromise likelihood percentage
+        config: Configuration dict
+        export_events: Whether to export events to file
+        output_file: Output file path
+        raw_results: Raw (non-deduplicated) results for hunt query analysis (preserves burst patterns)
+    """
     print(f"\nCOMPROMISE ANALYSIS RESULTS")
     print("=" * 80)
+
+    # Use raw_results for hunt query analysis if provided, otherwise fall back to deduplicated results
+    if raw_results is None:
+        raw_results = results
 
     # Determine selected dates (specific date or date range) to scope all summaries
     target_dates = None
@@ -3405,7 +3419,10 @@ def print_compromise_analysis(results, detected_chains, likelihood, config, expo
         ev_date = ts.split(' ')[0] if ts else ''
         return ev_date in target_dates
 
-    # Deduplicate scoped_results to match file export behavior
+    # Create RAW scoped results for hunt query analysis (no deduplication, preserves burst patterns)
+    raw_scoped_results = [ev for ev in raw_results if _within_scope(ev)]
+    
+    # Deduplicate scoped_results for display/export
     unique_keys = set()
     scoped_results = []
     for ev in results:
@@ -3443,8 +3460,8 @@ def print_compromise_analysis(results, detected_chains, likelihood, config, expo
             if ok:
                 scoped_chains.append(chain)
 
-    # Analyze hunt query matches using scoped results
-    matched_queries = analyze_hunt_queries(scoped_results, config)
+    # Analyze hunt query matches using RAW scoped results (preserves burst patterns for queries like brute-force detection)
+    matched_queries = analyze_hunt_queries(raw_scoped_results, config)
     
     # Collect high-confidence indicators
     high_confidence_events = []
@@ -4228,16 +4245,19 @@ if __name__ == "__main__":
                 print("Failed to load compromise configuration")
                 sys.exit(1)
             
+            # Store raw results for hunt query analysis (which may need to see burst patterns)
+            raw_results = results
+            
             # ANALYZE EVENT CHAINS FIRST (before deduplication)
             # This is critical because some chains require multiple events of the same type
             # (e.g., brute-force detection needs 5+ failed logons, Kerberoasting needs 10+ ticket requests)
-            detected_chains = analyze_event_chains(results, config)
+            detected_chains = analyze_event_chains(raw_results, config)
             
             # DEDUPLICATE results AFTER chain analysis to avoid breaking chain detection
             # but BEFORE likelihood scoring to avoid score inflation
             unique_keys = set()
             deduplicated_results = []
-            for ev in results:
+            for ev in raw_results:
                 ts = ev.get('timestamp', '') or ''
                 ev_date = ts.split(' ')[0] if ts else ''
                 key = (
@@ -4252,22 +4272,19 @@ if __name__ == "__main__":
                 unique_keys.add(key)
                 deduplicated_results.append(ev)
             
-            # Use deduplicated results for likelihood scoring and display
-            results = deduplicated_results
-            
             # Calculate compromise likelihood (uses deduplicated results)
-            likelihood = calculate_compromise_likelihood(results, detected_chains, config)
+            likelihood = calculate_compromise_likelihood(deduplicated_results, detected_chains, config)
             
             # Determine output file for event export
             output_file = getattr(args, 'output', None)
             export_events = getattr(args, 'export_events', False)
             
-            # Print analysis
-            print_compromise_analysis(results, detected_chains, likelihood, config, export_events, output_file)
+            # Print analysis: Pass BOTH raw (for hunt queries) and deduplicated (for display)
+            print_compromise_analysis(deduplicated_results, detected_chains, likelihood, config, export_events, output_file, raw_results=raw_results)
             
             # Show scoring breakdown if requested
             if getattr(args, 'scoring_breakdown', False):
-                print_scoring_breakdown(results, detected_chains, config, likelihood)
+                print_scoring_breakdown(deduplicated_results, detected_chains, config, likelihood)
             
             # Exit with appropriate code based on likelihood
             if likelihood >= 50:
