@@ -567,6 +567,11 @@ class WindowsEventLogSearcher:
                         f, event_ids, start_time, end_time, position=idx)
                 except Exception as e:
                     print(f"Error parsing {f}: {e}")
+            
+            # Apply deduplication if requested (only for regular mode)
+            if 'args' in globals() and getattr(args, 'deduplicate', False):
+                self._deduplicate_results()
+            
             self._output_results(output_format)
             return
 
@@ -618,6 +623,10 @@ class WindowsEventLogSearcher:
         # Merge results
         for lst in results_lists:
             self.results.extend(lst)
+
+        # Apply deduplication if requested (only for regular mode)
+        if 'args' in globals() and getattr(args, 'deduplicate', False):
+            self._deduplicate_results()
 
         self._output_results(output_format)
 
@@ -892,6 +901,44 @@ class WindowsEventLogSearcher:
             if event_id in ids:
                 return category
         return 'Unknown'
+
+    def _deduplicate_results(self):
+        """
+        Deduplicate self.results using the same logic as compromise mode.
+        Events are considered duplicates if they have the same:
+        - Date (extracted from timestamp)
+        - Event ID
+        - Log name
+        - Computer name
+        - Description (hashed for comparison)
+        """
+        if not self.results:
+            return
+        
+        unique_keys = set()
+        deduplicated = []
+        original_count = len(self.results)
+        
+        for ev in self.results:
+            ts = ev.get('timestamp', '') or ''
+            ev_date = ts.split(' ')[0] if ts else ''
+            key = (
+                ev_date,
+                ev.get('event_id'),
+                (ev.get('log_name') or ''),
+                (ev.get('computer') or ''),
+                hash(ev.get('description') or '')
+            )
+            if key in unique_keys:
+                continue
+            unique_keys.add(key)
+            deduplicated.append(ev)
+        
+        self.results = deduplicated
+        removed_count = original_count - len(deduplicated)
+        
+        if not self.quiet and removed_count > 0:
+            print(f"[Deduplication] Removed {removed_count} duplicate event(s), {len(deduplicated)} unique event(s) remain")
 
     def _output_results(self, output_format):
         """Output results in the specified format"""
@@ -2675,13 +2722,20 @@ def hunt_compromise_indicators(hours_back=24, specific_date=None, from_date=None
 
 
 def analyze_event_chains(results, config):
-    """Analyze event chains to detect attack patterns.
+    """Analyze event chains to detect attack patterns with TEMPORAL COHERENCE.
+    Events must occur close together in time, not randomly scattered.
     Enhanced to consider LOLBins execution in chains."""
     if 'correlate_event_chains' not in config:
         return []
     
+    from datetime import datetime, timedelta
+    
     detected_chains = []
     chains = config['correlate_event_chains']
+    
+    # TEMPORAL COHERENCE SETTINGS
+    MAX_CHAIN_DURATION_MINUTES = 60  # Chain events must occur within 60 minutes
+    MAX_STEP_GAP_MINUTES = 30  # Max gap between consecutive steps
     
     # Group events by session/user for correlation
     events_by_session = {}
@@ -2705,16 +2759,14 @@ def analyze_event_chains(results, config):
             for step in steps:
                 step_event_id = step.get('event_id')
                 step_source = step.get('source', 'Security')
+                min_count = step.get('min_count', 1)  # Support burst detection (e.g., Kerberoasting)
                 
-                # Find matching events in this session
+                # Find ALL matching events in this session for this step
+                step_matches = []
                 for event in session_events:
                     if (event.get('event_id') == step_event_id and 
                         event.get('log_name', '').lower() == step_source.lower()):
-                        matched_steps.append({
-                            'step': step,
-                            'event': event,
-                            'timestamp': event.get('timestamp')
-                        })
+                        step_matches.append(event)
                         
                         # Check if this step involves LOLBin execution
                         if event.get('risk_reasons'):
@@ -2723,28 +2775,82 @@ def analyze_event_chains(results, config):
                                     lolbin_detected = True
                                 if 'privilege' in reason.lower():
                                     privileged_execution = True
-                        
-                        break
+                
+                # Check if we have enough events for this step (min_count)
+                if len(step_matches) >= min_count:
+                    # Use the first match for timing (or closest to previous step)
+                    matched_steps.append({
+                        'step': step,
+                        'event': step_matches[0],
+                        'timestamp': step_matches[0].get('timestamp'),
+                        'count': len(step_matches)
+                    })
             
-            # If we found multiple steps, this might be a chain
+            # If we found multiple steps, check TEMPORAL COHERENCE
             if len(matched_steps) >= 2:
-                base_confidence = len(matched_steps) / len(steps)
+                # Parse timestamps and sort chronologically
+                timestamped_steps = []
+                for matched_step in matched_steps:
+                    ts_str = matched_step['timestamp']
+                    if ts_str:
+                        try:
+                            ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                            timestamped_steps.append({**matched_step, 'datetime': ts})
+                        except:
+                            pass  # Skip events with invalid timestamps
+                
+                if len(timestamped_steps) < 2:
+                    continue  # Need at least 2 events with valid timestamps
+                
+                # Sort by time
+                timestamped_steps.sort(key=lambda x: x['datetime'])
+                
+                # CHECK TEMPORAL COHERENCE
+                first_event_time = timestamped_steps[0]['datetime']
+                last_event_time = timestamped_steps[-1]['datetime']
+                total_duration = (last_event_time - first_event_time).total_seconds() / 60.0  # minutes
+                
+                # Check if chain duration is reasonable (not scattered throughout the day)
+                if total_duration > MAX_CHAIN_DURATION_MINUTES:
+                    # Events too spread out - likely legitimate scattered activity
+                    continue
+                
+                # Check gaps between consecutive steps
+                max_gap = 0
+                for i in range(1, len(timestamped_steps)):
+                    gap = (timestamped_steps[i]['datetime'] - timestamped_steps[i-1]['datetime']).total_seconds() / 60.0
+                    max_gap = max(max_gap, gap)
+                
+                if max_gap > MAX_STEP_GAP_MINUTES:
+                    # Too long gap between steps - not a coherent chain
+                    continue
+                
+                # PASSED TEMPORAL COHERENCE CHECKS - this is a legitimate chain
+                base_confidence = len(timestamped_steps) / len(steps)
+                
+                # BONUS: Increase confidence for tight temporal clustering
+                if total_duration < 10:  # Events within 10 minutes = very suspicious
+                    base_confidence = min(base_confidence + 0.15, 1.0)  # +15% for tight clustering
+                elif total_duration < 30:  # Events within 30 minutes = suspicious
+                    base_confidence = min(base_confidence + 0.08, 1.0)  # +8% for moderate clustering
                 
                 # Increase confidence if LOLBin was detected in the chain
                 if lolbin_detected:
-                    base_confidence = min(base_confidence + 0.15, 1.0)  # +15% for LOLBin
+                    base_confidence = min(base_confidence + 0.12, 1.0)  # +12% for LOLBin (reduced from 15%)
                 
                 # Further increase if LOLBin was executed with privileges
                 if lolbin_detected and privileged_execution:
-                    base_confidence = min(base_confidence + 0.1, 1.0)  # Additional +10%
+                    base_confidence = min(base_confidence + 0.08, 1.0)  # Additional +8% (reduced from 10%)
                 
                 detected_chains.append({
                     'chain_name': chain_name,
                     'session_id': session_id,
-                    'matched_steps': matched_steps,
+                    'matched_steps': timestamped_steps,
                     'confidence': base_confidence,
                     'lolbin_detected': lolbin_detected,
-                    'privileged_execution': privileged_execution
+                    'privileged_execution': privileged_execution,
+                    'duration_minutes': total_duration,
+                    'max_gap_minutes': max_gap
                 })
     
     return detected_chains
@@ -2765,14 +2871,15 @@ def calculate_compromise_likelihood(results, detected_chains, config):
         1102: 25,  # Log cleared (defense evasion)
         1100: 20,  # Event log service stopped
         1104: 20,  # Security log cleared
-        4732: 22,  # Member added to local group (privilege escalation)
-        4728: 20,  # Member added to global group
+        4732: 24,  # Member added to local group (privilege escalation) - ENHANCED
+        4728: 22,  # Member added to global group - ENHANCED
+        4720: 20,  # User account created - MOVED TO CRITICAL
         
         # HIGH (12-18 points) - Strong compromise indicators
         4697: 18,  # Service installed (persistence)
-        4720: 15,  # User account created
-        4648: 15,  # Logon with explicit credentials
+        4648: 16,  # Logon with explicit credentials - ENHANCED
         4771: 15,  # Kerberos pre-authentication failed
+        4672: 14,  # Special privileges assigned - ADDED
         4104: 14,  # PowerShell script block logging
         4698: 12,  # Scheduled task created (persistence)
         4722: 12,  # User account enabled
@@ -2920,20 +3027,69 @@ def calculate_compromise_likelihood(results, detected_chains, config):
     # Add capped DNS query score
     total_score += min(dns_query_score, 10)
     
-    # Event chain scoring (enhanced)
+    # Event chain scoring (VERY CONSERVATIVE - reduce false positives)
+    # Further reduced base multiplier from 15 to 8 to prevent score inflation
     chain_score = 0
     for chain in detected_chains:
-        base_chain_score = chain['confidence'] * 30  # Base chain score
+        base_chain_score = chain['confidence'] * 8  # REDUCED from 15 to 8 (73% reduction from original 30)
+        chain_name = chain.get('chain_name', '').lower()
         
-        # Bonus for LOLBin in chain
+        # High-priority chain multipliers (FURTHER REDUCED)
+        if 'brute-force' in chain_name or 'password spray' in chain_name:
+            base_chain_score *= 1.4  # REDUCED from 1.8
+        elif 'kerberoast' in chain_name or 'service ticket' in chain_name:
+            base_chain_score *= 1.35  # REDUCED from 1.7
+        elif 'unauthorized account' in chain_name or 'privilege escalation' in chain_name:
+            base_chain_score *= 1.3  # REDUCED from 1.6
+        elif 'credential dumping' in chain_name or 'antiforensics' in chain_name or 'cleanup' in chain_name:
+            base_chain_score *= 1.35  # REDUCED from 1.7
+        elif 'lateral movement' in chain_name or 'explicit credentials' in chain_name:
+            base_chain_score *= 1.25  # REDUCED from 1.5
+        elif 'powershell' in chain_name and 'fileless' in chain_name:
+            base_chain_score *= 1.2  # REDUCED from 1.4
+        elif 'scheduled task' in chain_name and 'persistence' in chain_name:
+            base_chain_score *= 1.15  # REDUCED from 1.3
+        
+        # Bonus for LOLBin in chain (FURTHER REDUCED)
         if chain.get('lolbin_detected'):
-            base_chain_score *= 1.5
+            base_chain_score *= 1.1  # REDUCED from 1.2
         
-        # Bonus for privileged execution in chain
+        # Bonus for privileged execution in chain (FURTHER REDUCED)
         if chain.get('privileged_execution'):
-            base_chain_score *= 1.3
+            base_chain_score *= 1.08  # REDUCED from 1.15
         
         chain_score += base_chain_score
+    
+    # Pattern-based detection bonuses (specific attack indicators)
+    pattern_bonus = 0
+    
+    # Detect Kerberoasting (burst of 4769 events)
+    event_4769_count = sum(1 for e in dedup_results if e.get('event_id') == 4769)
+    if event_4769_count >= 10:
+        pattern_bonus += 40  # Strong indicator of Kerberoasting
+    elif event_4769_count >= 5:
+        pattern_bonus += 20  # Moderate indicator
+    
+    # Detect brute-force (multiple 4625 events)
+    event_4625_count = sum(1 for e in dedup_results if e.get('event_id') == 4625)
+    if event_4625_count >= 10:
+        pattern_bonus += 35  # Strong brute-force indicator
+    elif event_4625_count >= 5:
+        pattern_bonus += 15  # Moderate brute-force
+    
+    # Detect 4625 → 4624 sequence (brute-force success)
+    has_4625 = any(e.get('event_id') == 4625 for e in dedup_results)
+    has_4624 = any(e.get('event_id') == 4624 for e in dedup_results)
+    has_4672 = any(e.get('event_id') == 4672 for e in dedup_results)
+    if has_4625 and has_4624 and has_4672:
+        pattern_bonus += 30  # Brute-force followed by privileged access
+    elif has_4625 and has_4624:
+        pattern_bonus += 15  # Brute-force followed by success
+    
+    # Detect 4648 with remote indicators
+    event_4648_count = sum(1 for e in dedup_results if e.get('event_id') == 4648)
+    if event_4648_count >= 3:
+        pattern_bonus += 25  # Multiple explicit credential usage
     
     # Hunt query match bonuses (conservative)
     hunt_query_bonus = 0
@@ -2968,8 +3124,20 @@ def calculate_compromise_likelihood(results, detected_chains, config):
         else:
             temporal_factor = 0.85
     
-    # Calculate final likelihood (apply temporal coherence)
-    final_score = (total_score + chain_score + hunt_query_bonus + high_confidence_bonus) * temporal_factor
+    # Calculate final likelihood with WEIGHTED components
+    # VERY CONSERVATIVE weighting to minimize false positives
+    # Weighting: Chains (2.0x) > Pattern Bonus (1.3x) > Individual Events (1x) > Hunt Queries (0.2x)
+    weighted_chain_score = chain_score * 2.0  # 2.0x multiplier for correlated chains (REDUCED from 2.5)
+    weighted_pattern_bonus = pattern_bonus * 1.3  # 1.3x multiplier for pattern detection (REDUCED from 1.5)
+    weighted_hunt_bonus = hunt_query_bonus * 0.2  # 0.2x multiplier for hunt queries (REDUCED from 0.3)
+    
+    final_score = (
+        total_score +                    # Individual event scores (base weight)
+        weighted_chain_score +           # Event chains (2.0x weight) - STRONGEST INDICATOR
+        weighted_pattern_bonus +         # Pattern bonuses (1.3x weight)
+        weighted_hunt_bonus +            # Hunt query bonuses (0.2x weight)
+        high_confidence_bonus            # High confidence bonus (base weight)
+    ) * temporal_factor
     
     # More sophisticated normalization
     # Scale based on event count and severity distribution
@@ -2978,7 +3146,7 @@ def calculate_compromise_likelihood(results, detected_chains, config):
         return 0.0
     
     # Base normalization: score per event
-    base_likelihood = (final_score / event_count) * 10  # Scale factor
+    base_likelihood = (final_score / max(event_count, 1)) * 10  # Scale factor
     
     # Apply logarithmic scaling to prevent always hitting 100%
     import math
@@ -2987,13 +3155,29 @@ def calculate_compromise_likelihood(results, detected_chains, config):
     else:
         likelihood = 0.0
     
-    # Ensure minimum threshold for high confidence events (reduced)
-    if high_confidence_count > 0:
-        likelihood = max(likelihood, 20.0)
-
-    # If no chains detected, cap likelihood to avoid false positives
-    if not detected_chains:
-        likelihood = min(likelihood, 60.0)
+    # CHAIN-CENTRIC ADJUSTMENTS (VERY CONSERVATIVE):
+    # Much stricter thresholds to minimize false positives
+    if detected_chains:
+        chain_count = len(detected_chains)
+        # VERY conservative thresholds - require more chains for high likelihood
+        if chain_count >= 5:
+            likelihood = max(likelihood, 65.0)  # 5+ chains = high likelihood (was 4+, was 70%)
+        elif chain_count >= 4:
+            likelihood = max(likelihood, 55.0)  # 4 chains = moderate-high (was 70%)
+        elif chain_count >= 3:
+            likelihood = max(likelihood, 45.0)  # 3 chains = moderate (was 60%)
+        elif chain_count >= 2:
+            likelihood = max(likelihood, 35.0)  # 2 chains = low-moderate (was 50%)
+        else:
+            likelihood = max(likelihood, 25.0)  # 1 chain = low (was 35%)
+    else:
+        # If NO chains detected, cap likelihood to avoid false positives
+        # Individual events without chains are weaker indicators
+        likelihood = min(likelihood, 25.0)  # REDUCED from 35% to 25%
+    
+    # Ensure minimum threshold for high confidence events (minimal)
+    if high_confidence_count > 0 and not detected_chains:
+        likelihood = max(likelihood, 8.0)  # REDUCED from 10% when no chains
     
     # Cap at 100%
     likelihood = min(100.0, likelihood)
@@ -3057,17 +3241,74 @@ def print_scoring_breakdown(results, detected_chains, config, likelihood):
     print(f"  Privileged executions: {privileged_events}")
     print(f"  Suspicious processes: {suspicious_process_events}")
     
-    # Chain analysis
-    if detected_chains:
-        print(f"\nAttack Chains: {len(detected_chains)} detected")
-        for i, chain in enumerate(detected_chains, 1):
-            print(f"  Chain {i}: {chain['chain_name']} (confidence: {chain['confidence']:.1%})")
-            if chain.get('lolbin_detected'):
-                print(f"    - Contains LOLBin execution")
-            if chain.get('privileged_execution'):
-                print(f"    - Contains privileged execution")
+    # Pattern Detection
+    event_4769_count = sum(1 for e in results if e.get('event_id') == 4769)
+    event_4625_count = sum(1 for e in results if e.get('event_id') == 4625)
+    event_4648_count = sum(1 for e in results if e.get('event_id') == 4648)
+    has_4624 = any(e.get('event_id') == 4624 for e in results)
+    has_4672 = any(e.get('event_id') == 4672 for e in results)
     
+    print(f"\nPattern Detection:")
+    if event_4769_count >= 10:
+        print(f"  [!] Kerberoasting: {event_4769_count} service tickets (CRITICAL)")
+    elif event_4769_count >= 5:
+        print(f"  [!] Kerberoasting: {event_4769_count} service tickets (MODERATE)")
+    
+    if event_4625_count >= 10:
+        print(f"  [!] Brute-Force: {event_4625_count} failed logons (CRITICAL)")
+    elif event_4625_count >= 5:
+        print(f"  [!] Brute-Force: {event_4625_count} failed logons (MODERATE)")
+    
+    if event_4625_count > 0 and has_4624 and has_4672:
+        print(f"  [!] Brute-Force SUCCESS → Privileged Access (HIGH RISK)")
+    elif event_4625_count > 0 and has_4624:
+        print(f"  [!] Brute-Force SUCCESS detected")
+    
+    if event_4648_count >= 3:
+        print(f"  [!] Explicit Credentials: {event_4648_count} uses (Lateral Movement?)")
+    
+    # Chain analysis with WEIGHTED SCORING and TEMPORAL INFO
+    if detected_chains:
+        print(f"\nAttack Chains: {len(detected_chains)} detected [2.0x WEIGHT MULTIPLIER]")
+        print(f"  ** Chains weighted higher than individual events **")
+        print(f"  ** Temporal coherence enforced: max 60min duration, 30min gaps **")
+        for i, chain in enumerate(detected_chains, 1):
+            duration = chain.get('duration_minutes', 0)
+            print(f"  Chain {i}: {chain['chain_name']} (confidence: {chain['confidence']:.1%}, {duration:.1f}min duration)")
+            if duration < 10:
+                print(f"    - RAPID execution (<10min) [+15% confidence bonus]")
+            elif duration < 30:
+                print(f"    - Quick execution (<30min) [+8% confidence bonus]")
+            if chain.get('lolbin_detected'):
+                print(f"    - Contains LOLBin execution [+1.1x bonus]")
+            if chain.get('privileged_execution'):
+                print(f"    - Contains privileged execution [+1.08x bonus]")
+    else:
+        print(f"\nAttack Chains: 0 detected")
+        print(f"  ** No chains detected - likelihood capped at 25% **")
+    
+    print(f"\n" + "=" * 50)
+    print(f"SCORING WEIGHTS (Very Conservative):")
+    print(f"  Event Chains: 2.0x (Strongest indicator)")
+    print(f"  Pattern Bonuses: 1.3x")
+    print(f"  Individual Events: 1.0x (base)")
+    print(f"  Hunt Queries: 0.2x (noise reduction)")
+    print(f"=" * 50)
     print(f"\nFinal Likelihood: {likelihood:.1f}%")
+    if detected_chains:
+        chain_count = len(detected_chains)
+        if chain_count >= 5:
+            print(f"  ** 5+ chains detected = minimum 65% likelihood **")
+        elif chain_count >= 4:
+            print(f"  ** 4 chains detected = minimum 55% likelihood **")
+        elif chain_count >= 3:
+            print(f"  ** 3 chains detected = minimum 45% likelihood **")
+        elif chain_count >= 2:
+            print(f"  ** 2 chains detected = minimum 35% likelihood **")
+        else:
+            print(f"  ** 1 chain detected = minimum 25% likelihood **")
+    else:
+        print(f"  ** No chains = maximum 25% likelihood (false positive reduction) **")
     print("=" * 50)
 
 
@@ -3156,7 +3397,7 @@ def print_compromise_analysis(results, detected_chains, likelihood, config, expo
         except Exception:
             target_dates = None
 
-    # Filter results to target_dates if provided
+    # Filter results to target_dates if provided AND deduplicate (same logic as file export)
     def _within_scope(ev):
         if not target_dates:
             return True
@@ -3164,7 +3405,26 @@ def print_compromise_analysis(results, detected_chains, likelihood, config, expo
         ev_date = ts.split(' ')[0] if ts else ''
         return ev_date in target_dates
 
-    scoped_results = [e for e in results if _within_scope(e)]
+    # Deduplicate scoped_results to match file export behavior
+    unique_keys = set()
+    scoped_results = []
+    for ev in results:
+        if not _within_scope(ev):
+            continue
+        # Same deduplication key as file export
+        ts = ev.get('timestamp', '') or ''
+        ev_date = ts.split(' ')[0] if ts else ''
+        key = (
+            ev_date,
+            ev.get('event_id'),
+            (ev.get('log_name') or ''),
+            (ev.get('computer') or ''),
+            hash(ev.get('description') or '')
+        )
+        if key in unique_keys:
+            continue
+        unique_keys.add(key)
+        scoped_results.append(ev)
 
     # Filter detected chains to scope (all matched steps must be within range)
     scoped_chains = []
@@ -3197,18 +3457,29 @@ def print_compromise_analysis(results, detected_chains, likelihood, config, expo
     
     # ===== CONSOLE OUTPUT: SUMMARIES ONLY =====
     
-    # Print summary of detected chains
+    # Print summary of detected chains with TEMPORAL INFO
     if scoped_chains:
         print(f"\nDETECTED ATTACK CHAINS ({len(scoped_chains)} found):")
         for i, chain in enumerate(scoped_chains, 1):
             total_steps = len(chain['matched_steps'])
+            duration = chain.get('duration_minutes', 0)
+            max_gap = chain.get('max_gap_minutes', 0)
             indicators = []
             if chain.get('lolbin_detected'):
                 indicators.append("LOLBin")
             if chain.get('privileged_execution'):
                 indicators.append("Privileged")
             indicator_str = f" [{', '.join(indicators)}]" if indicators else ""
-            print(f"  {i}. {chain['chain_name']} (Confidence: {chain['confidence']:.1%}, {total_steps} steps){indicator_str}")
+            
+            # Show temporal clustering info
+            if duration < 10:
+                temporal_str = f", {duration:.1f}min duration ⚠ RAPID"
+            elif duration < 30:
+                temporal_str = f", {duration:.1f}min duration"
+            else:
+                temporal_str = f", {duration:.0f}min duration"
+            
+            print(f"  {i}. {chain['chain_name']} (Confidence: {chain['confidence']:.1%}, {total_steps} steps{temporal_str}){indicator_str}")
     
     # Print summary of hunt query matches
     if matched_queries:
@@ -3253,6 +3524,58 @@ def print_compromise_analysis(results, detected_chains, likelihood, config, expo
         for category, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
             print(f"   - {category}: {count} event(s)")
     
+    # ===== STATS MATRIX (TEXT) =====
+    try:
+        def _print_stats_matrix():
+            # Build per-category counts from scoped results only
+            category_rows = []
+            for category, event_ids in (config or {}).items():
+                if isinstance(event_ids, list) and all(isinstance(x, int) for x in event_ids):
+                    matched = [e for e in scoped_results if e.get('event_id') in event_ids]
+                    if not matched:
+                        continue
+                    # counts
+                    total = len(matched)
+                    high_conf_ids = set(config.get('prioritize_high_confidence_indicators', []))
+                    high_conf = sum(1 for e in matched if e.get('event_id') in high_conf_ids)
+                    high_risk_ids = set([1102, 1100, 1104, 4720, 4728, 4732, 4697])
+                    high_risk = sum(1 for e in matched if e.get('event_id') in high_risk_ids)
+                    # hunt-matched
+                    hunt_set = set()
+                    for q in matched_queries:
+                        for ev in q.get('events', []):
+                            hunt_set.add(id(ev))
+                    hunt = sum(1 for e in matched if id(e) in hunt_set)
+                    # chain steps
+                    chain_set = set()
+                    for ch in scoped_chains:
+                        for s in ch.get('matched_steps', []):
+                            if 'event' in s:
+                                chain_set.add(id(s['event']))
+                    chain = sum(1 for e in matched if id(e) in chain_set)
+                    category_rows.append((category, total, high_conf, high_risk, hunt, chain))
+
+            if not category_rows:
+                return
+
+            # Sort by total desc
+            category_rows.sort(key=lambda r: r[1], reverse=True)
+
+            # Print matrix
+            print("\nSTATISTICS MATRIX (scoped)")
+            print("-" * 80)
+            header = f"{'Category':40s} {'Total':>6s} {'HighConf':>8s} {'HighRisk':>8s} {'Hunt':>6s} {'Chain':>6s}"
+            print(header)
+            print("-" * 80)
+            for row in category_rows[:20]:  # cap rows to keep compact
+                name, total, hc, hr, hq, ch = row
+                print(f"{name[:40]:40s} {total:6d} {hc:8d} {hr:8d} {hq:6d} {ch:6d}")
+            print("-" * 80)
+
+        _print_stats_matrix()
+    except Exception:
+        pass
+
     # ===== FILE EXPORT: DETAILED EVENT LISTS WITH MARKERS =====
     if export_events and output_file:
         try:
@@ -3387,12 +3710,12 @@ def print_compromise_analysis(results, detected_chains, likelihood, config, expo
                         f.write(f"  Description: {description}\n")
                         f.write("-" * 80 + "\n")
             
-            # Update export summary message
-            export_msg = f"{len(results)} event(s)"
+            # Update export summary message (use filtered_results count, not all results)
+            export_msg = f"{len(filtered_results)} event(s)"
             if high_conf_count > 0:
                 export_msg += f" ({high_conf_count} high-confidence)"
-            if len(detected_chains) > 0:
-                export_msg += f", {len(detected_chains)} attack chain(s)"
+            if len(scoped_chains) > 0:
+                export_msg += f", {len(scoped_chains)} attack chain(s)"
             if len(matched_queries) > 0:
                 export_msg += f", {len(matched_queries)} hunt query match(es)"
             if len(high_risk_events) > 0:
@@ -3650,6 +3973,8 @@ if __name__ == "__main__":
                         help='Export all discovered events to file (use with --compromised and -o output)')
     parser.add_argument('--scoring-breakdown', action='store_true',
                         help='Show detailed scoring breakdown for compromise likelihood calculation')
+    parser.add_argument('--deduplicate', action='store_true',
+                        help='Remove duplicate events from results (regular mode only; compromise mode always deduplicates). Events are considered duplicates if they have the same date, event ID, log name, computer, and description.')
 
     args = parser.parse_args()
     # expose args globally for helper access
@@ -3903,10 +4228,34 @@ if __name__ == "__main__":
                 print("Failed to load compromise configuration")
                 sys.exit(1)
             
-            # Analyze event chains
+            # ANALYZE EVENT CHAINS FIRST (before deduplication)
+            # This is critical because some chains require multiple events of the same type
+            # (e.g., brute-force detection needs 5+ failed logons, Kerberoasting needs 10+ ticket requests)
             detected_chains = analyze_event_chains(results, config)
             
-            # Calculate compromise likelihood
+            # DEDUPLICATE results AFTER chain analysis to avoid breaking chain detection
+            # but BEFORE likelihood scoring to avoid score inflation
+            unique_keys = set()
+            deduplicated_results = []
+            for ev in results:
+                ts = ev.get('timestamp', '') or ''
+                ev_date = ts.split(' ')[0] if ts else ''
+                key = (
+                    ev_date,
+                    ev.get('event_id'),
+                    (ev.get('log_name') or ''),
+                    (ev.get('computer') or ''),
+                    hash(ev.get('description') or '')
+                )
+                if key in unique_keys:
+                    continue
+                unique_keys.add(key)
+                deduplicated_results.append(ev)
+            
+            # Use deduplicated results for likelihood scoring and display
+            results = deduplicated_results
+            
+            # Calculate compromise likelihood (uses deduplicated results)
             likelihood = calculate_compromise_likelihood(results, detected_chains, config)
             
             # Determine output file for event export

@@ -3,10 +3,72 @@
     4624, 4625, 4648, 4672, 4768, 4769, 4771, 4776, 4720, 4722, 4725, 4726, 4728
   ],
   "compromise_indicators": [
-    1102, 4719, 7045, 4697, 4698, 4104, 4625, 4688, 4624, 4648, 4672, 4702,
-    4700, 1100, 1104, 8004, 8005, 8006, 4680, 4690, 4768, 4769, 4771, 4776
+    1102, 4719, 7045, 4697, 4698, 4104, 4625, 4648, 4672, 4702,
+    4700, 1100, 1104, 4680, 4690, 4769, 4771, 4776
   ],
   "correlate_event_chains": [
+    {
+      "name": "Brute-Force / Password Spray to Compromise",
+      "steps": [
+        {
+          "event_id": 4625,
+          "note": "Multiple failed logons (brute-force or spray)",
+          "source": "Security",
+          "min_count": 5
+        },
+        {
+          "event_id": 4624,
+          "note": "Successful logon (LogonType 3/10)",
+          "source": "Security"
+        },
+        {
+          "event_id": 4672,
+          "note": "Special privileges assigned to compromised account",
+          "source": "Security"
+        }
+      ]
+    },
+    {
+      "name": "Kerberoasting (Service Ticket Abuse)",
+      "steps": [
+        {
+          "event_id": 4768,
+          "note": "Kerberos TGT requested",
+          "source": "Security"
+        },
+        {
+          "event_id": 4769,
+          "note": "Multiple Kerberos service tickets requested (burst)",
+          "source": "Security",
+          "min_count": 10
+        },
+        {
+          "event_id": 4624,
+          "note": "Service account logon after ticket abuse",
+          "source": "Security"
+        }
+      ]
+    },
+    {
+      "name": "Unauthorized Account Creation and Privilege Escalation",
+      "steps": [
+        {
+          "event_id": 4720,
+          "note": "User account created",
+          "source": "Security"
+        },
+        {
+          "event_id": 4728,
+          "note": "User added to global admin group",
+          "source": "Security"
+        },
+        {
+          "event_id": 4624,
+          "note": "Logon with newly created privileged account",
+          "source": "Security"
+        }
+      ]
+    },
     {
       "name": "RDP/Lateral movement leading to service persistence",
       "steps": [
@@ -44,6 +106,106 @@
           "event_id": 1003,
           "note": "Outbound C2-like network connection from the new service process",
           "source": "Sysmon"
+        }
+      ]
+    },
+    {
+      "name": "Logon to Privilege Escalation to Persistence",
+      "steps": [
+        {
+          "event_id": 4624,
+          "note": "Successful logon",
+          "source": "Security"
+        },
+        {
+          "event_id": 4672,
+          "note": "Special privileges assigned (admin access)",
+          "source": "Security"
+        },
+        {
+          "event_id": 4688,
+          "note": "Suspicious process (sc.exe, schtasks.exe, net.exe)",
+          "source": "Security"
+        },
+        {
+          "event_id": 7045,
+          "note": "Service created OR",
+          "source": "System"
+        },
+        {
+          "event_id": 4698,
+          "note": "Scheduled task created",
+          "source": "Security"
+        }
+      ]
+    },
+    {
+      "name": "PowerShell Fileless Execution",
+      "steps": [
+        {
+          "event_id": 4688,
+          "note": "powershell.exe process created",
+          "source": "Security"
+        },
+        {
+          "event_id": 4104,
+          "note": "Script block with encoded/obfuscated payload",
+          "source": "PowerShell"
+        },
+        {
+          "event_id": 8004,
+          "note": "PowerShell module loaded OR",
+          "source": "PowerShell"
+        },
+        {
+          "event_id": 8005,
+          "note": "PowerShell module loaded",
+          "source": "PowerShell"
+        }
+      ]
+    },
+    {
+      "name": "Credential Dumping with Cleanup (Antiforensics)",
+      "steps": [
+        {
+          "event_id": 4624,
+          "note": "Admin logon",
+          "source": "Security"
+        },
+        {
+          "event_id": 4688,
+          "note": "procdump.exe / comsvcs.dll execution",
+          "source": "Security"
+        },
+        {
+          "event_id": 1010,
+          "note": "LSASS process access (Sysmon)",
+          "source": "Sysmon"
+        },
+        {
+          "event_id": 1102,
+          "note": "Audit logs cleared after credential theft",
+          "source": "EventLog"
+        }
+      ]
+    },
+    {
+      "name": "Lateral Movement via Explicit Credentials",
+      "steps": [
+        {
+          "event_id": 4648,
+          "note": "Explicit credentials (runas/psexec/pass-the-hash)",
+          "source": "Security"
+        },
+        {
+          "event_id": 4688,
+          "note": "Remote execution process",
+          "source": "Security"
+        },
+        {
+          "event_id": 7045,
+          "note": "Service creation on target",
+          "source": "System"
         }
       ]
     },
@@ -206,12 +368,39 @@
       }
     },
     {
+      "event_ids": [4625],
+      "name": "Brute-Force Detection (multiple failed logons)",
+      "query_examples": {
+        "elastic": "winlog.event_id:4625",
+        "sigma_tag": "attack.credential_access/brute_force",
+        "splunk": "index=wineventlog EventCode=4625 | stats count by user, src_ip | where count>10"
+      }
+    },
+    {
       "event_ids": [4625, 4624, 4768, 4769, 4771, 4776],
       "name": "Kerberoasting / auth anomalies",
       "query_examples": {
         "elastic": "winlog.event_id:(4769 or 4771 or 4625)",
         "sigma_tag": "attack.credential_access/kerberoast",
         "splunk": "index=wineventlog EventCode IN (4769,4771) OR (EventCode=4625) | stats count by user, service, src_ip"
+      }
+    },
+    {
+      "event_ids": [4769],
+      "name": "Kerberoast Hunt (service ticket burst)",
+      "query_examples": {
+        "elastic": "winlog.event_id:4769 AND winlog.event_data.TicketEncryptionType:0x17",
+        "sigma_tag": "attack.credential_access/kerberoast",
+        "splunk": "index=wineventlog EventCode=4769 TicketEncryptionType=0x17 | stats count by ServiceName"
+      }
+    },
+    {
+      "event_ids": [4720, 4722, 4728, 4732],
+      "name": "Unauthorized Account Creation / Privilege Changes",
+      "query_examples": {
+        "elastic": "winlog.event_id:(4720 or 4722 or 4728 or 4732)",
+        "sigma_tag": "attack.persistence/account_manipulation",
+        "splunk": "index=wineventlog EventCode IN (4720,4722,4728,4732) | search NOT user IN (\"ITAdmin\",\"HRProvisioning\")"
       }
     },
     {
@@ -227,9 +416,8 @@
   "log_clearing_events": [1102, 1100, 1104],
   "powershell_events": [4104, 8004, 8005, 8006, 4103],
   "prioritize_high_confidence_indicators": [
-    1001, 1003, 1010, 1011, 1013, 1022, 1100, 1102, 1104, 4103, 4104, 4697,
-    4698, 4699, 4701, 4719, 4720, 4722, 4725, 4726, 4728, 4732, 4735, 4756,
-    7040, 7045
+    1001, 1003, 1010, 1011, 1013, 1100, 1102, 1104, 4103, 4104, 4697,
+    4698, 4699, 4701, 4719, 4720, 4728, 4732, 7045
   ],
   "process_events": [4688, 4680, 4690],
   "service_events": [7045, 4697, 4698, 4702, 4700, 7040, 4699, 4701],

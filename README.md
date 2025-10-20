@@ -183,7 +183,32 @@ The `compromise.json` file includes several key sections:
 
 ### Advanced Scoring Methodology
 
-The compromise likelihood calculation uses a sophisticated multi-factor scoring system:
+The compromise likelihood calculation uses a sophisticated multi-factor scoring system with **very conservative chain-centric weighting**:
+
+#### **Component Weighting (Very Conservative Approach)**
+- **Event Chains**: **2.0x multiplier** - Correlated attack chains are weighted higher
+- **Pattern Bonuses**: **1.3x multiplier** - Detected attack patterns (Kerberoasting, brute-force, etc.)
+- **Individual Events**: **1.0x multiplier** - Base weight for standalone events
+- **Hunt Queries**: **0.2x multiplier** - Heavily reduced to minimize noise
+
+> **Why Chains Matter**: Event chains (e.g., 4625 → 4624 → 4672 → 7045) represent a complete attack sequence and are far more reliable indicators of compromise than isolated events. The 2.0x multiplier ensures that chain detection influences the likelihood score while minimizing false positives.
+
+#### **Chain-Based Likelihood Thresholds (Very Conservative)**
+- **5+ Chains Detected**: Minimum **65%** likelihood (high risk)
+- **4 Chains Detected**: Minimum **55%** likelihood (moderate-high risk)
+- **3 Chains Detected**: Minimum **45%** likelihood (moderate risk)
+- **2 Chains Detected**: Minimum **35%** likelihood (low-moderate risk)
+- **1 Chain Detected**: Minimum **25%** likelihood (low risk)
+- **No Chains Detected**: Maximum **25%** likelihood (reduces false positives)
+
+#### **Temporal Coherence Requirements (Critical)**
+Attack chains require **temporal proximity** to be considered valid:
+- **Maximum Chain Duration**: 60 minutes (events must occur within 1 hour)
+- **Maximum Step Gap**: 30 minutes (max time between consecutive events)
+- **Rapid Execution Bonus**: +15% confidence if chain completes in <10 minutes
+- **Quick Execution Bonus**: +8% confidence if chain completes in <30 minutes
+
+> **Why Temporal Coherence Matters**: A failed logon at 9 AM and another at 5 PM is likely legitimate (typos), not a brute-force attack. True attack chains show temporal clustering - events occur in rapid succession, not randomly scattered throughout the day.
 
 #### **Event Severity Levels**
 - **CRITICAL (20-25 pts)**: Log clearing, privilege escalation, group membership changes
@@ -209,11 +234,12 @@ The compromise likelihood calculation uses a sophisticated multi-factor scoring 
 #### **Score Capping and Normalization**
 - **DNS Query Capping**: Limited to 10 points total contribution regardless of quantity
 - **Logarithmic Scaling**: Prevents always hitting 100% for realistic assessments
-- **High Confidence Threshold**: Minimum 25% if high-confidence events found
+- **High Confidence Threshold**: Minimum 8% if high-confidence events found (without chains)
 
 #### False-Positive Reduction (v1.2)
-- **De-duplication for Scoring**: Events are deduped per day by `(date, event_id, computer, description)` before scoring
-- **Per-EventID Caps**: Each Event ID’s cumulative contribution is capped to avoid noisy categories overwhelming the score
+- **Universal De-duplication**: Events are deduplicated **before all analysis stages** (chain detection, likelihood scoring, console summaries, file export) using `(date, event_id, log_name, computer, description_hash)` to prevent duplicate noise from inflating scores and counts
+- **Consistent Metrics**: Console summaries, file export counts, and likelihood scores all operate on the same deduplicated dataset, ensuring complete consistency
+- **Per-EventID Caps**: Each Event ID's cumulative contribution is capped to avoid noisy categories overwhelming the score
 - **Temporal Coherence**: Clustered indicators in short windows increase likelihood; spread-out events decrease it
 - **Chain Requirement Cap**: If no attack chains detected, overall likelihood is capped (to reduce single-signal false positives)
 - **Strict High-Confidence Set**: Only a curated subset of Event IDs contributes to the high-confidence bonus
@@ -246,6 +272,31 @@ python ThreatHunting.py --compromised --date 2025-10-17 --export-events -o day_2
 ```bash
 # Summaries and exports include ONLY events from 2025-10-15 through 2025-10-17
 python ThreatHunting.py --compromised --from-date 2025-10-15 --to-date 2025-10-17 --export-events -o range_15_17.txt
+```
+
+**Verify Export Consistency:**
+```bash
+# Console and file will show identical deduplicated counts
+python ThreatHunting.py --compromised --date 2025-10-17 --export-events -o test.txt
+
+# Console might show:
+#   Total Events Found: 277
+#   Event ID 4697: 25 occurrences
+#   Event ID 1100: 1 occurrence
+#   Compromise Likelihood: 23.5%
+
+# File will contain exactly 277 events (25× Event 4697, 1× Event 1100)
+# Likelihood calculated from these 277 unique events only
+
+# Before v1.3 deduplication fix:
+#   Console: 16,208 events (with duplicates)
+#   File: 277 events (deduplicated)
+#   Likelihood: 37.9% (inflated by duplicates) ❌
+
+# After v1.3 deduplication fix:
+#   Console: 277 events (deduplicated)
+#   File: 277 events (deduplicated)
+#   Likelihood: 23.5% (accurate) ✅
 ```
 
 **Hours Window (last 6 hours):**
@@ -422,34 +473,11 @@ The tool automatically extracts and displays:
 The compromise likelihood percentage is indicative only and represents a probabilistic assessment. Always conduct thorough manual investigation before drawing conclusions about system compromise.
 
 #### Scoping & Export Guarantees
-- All console summaries (Detected Attack Chains, Hunt Query Matches, High‑Confidence Indicators, Critical High‑Risk Events, Category Breakdown) are computed strictly from the selected time window
-- Exported events are re-filtered to the selected time window and de‑duplicated; the count shown in the export header reflects this filtered set
-- While `--compromised` is active, the regular stdout export is disabled; only the compromise export writes to `-o` to avoid file conflicts/duplication
-
-### Recent Improvements
-
-#### **Advanced Scoring Methodology (v1.1)**
-- **Multi-Factor Scoring**: Event severity levels, context-aware multipliers, temporal weighting, and LOLBin detection
-- **DNS Query Handling**: Reduced false positives from common DNS queries with intelligent scoring and capping
-- **Context-Aware Analysis**: LOLBin execution (3x), privileged execution (2x), suspicious processes (1.5x)
-- **Temporal Weighting**: Recent events weighted higher (2x for last hour, 1.5x for last 6 hours)
-- **Score Normalization**: Logarithmic scaling prevents unrealistic 100% scores
-
-#### **Interactive Config Selection**
-- **User Choice**: Prompts to include additional config files (privilege escalation, persistence, PowerShell, etc.)
-- **Default Behavior**: Uses only `compromise.json` for focused analysis
-- **Expanded Scope**: Option to include 8 additional config files for comprehensive hunting
-
-#### **Enhanced Date Filtering**
-- **Precise Filtering**: Accurate date range filtering for single-day and multi-day searches
-- **Event Count Optimization**: Proper handling of high-volume events (DNS queries, process creation)
-- **Temporal Accuracy**: Events filtered to exact date boundaries (00:00:00 to 23:59:59)
-
-#### **Scoring Transparency**
-- **Detailed Breakdown**: `--scoring-breakdown` flag shows methodology and event classification
-- **Event Distribution**: Shows critical, high, medium, and low severity event counts
-- **Context Analysis**: Displays LOLBin executions, privileged events, and suspicious processes
-- **Chain Analysis**: Details detected attack chains with confidence levels
+- **Strict Time-Window Filtering**: All console summaries (Detected Attack Chains, Hunt Query Matches, High‑Confidence Indicators, Critical High‑Risk Events, Category Breakdown) are computed strictly from the selected time window (`--date`, `--from-date/--to-date`, or `--hours`)
+- **Universal Deduplication**: Events are deduplicated **once at the source** before being passed to chain detection, likelihood scoring, and console/file output—ensuring all metrics are consistent
+- **Accurate Event Counts**: Console summaries and file export show identical deduplicated counts (e.g., if console shows "Event ID 4697: 25 occurrences", the export file contains exactly 25 unique events)
+- **Export Safety**: While `--compromised` is active, the regular stdout export is disabled; only the compromise export writes to `-o` to avoid file conflicts/duplication
+- **Likelihood Scoring Accuracy**: Compromise likelihood is calculated from deduplicated events only, preventing duplicate noise from inflating scores (e.g., a service that restarts 400 times = 1 unique event, not 400 separate attacks)
 
 ---
 
@@ -700,9 +728,10 @@ python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 192.168.1.1
 
 Compromise hunting and assessment:
 
-- `--compromised`: Enable automated compromise assessment mode using `config/compromise.json`. Analyzes event correlation chains, hunt queries, and high-confidence indicators to calculate compromise likelihood percentage. Provides detailed analysis report with attack chains, critical events, and category breakdowns. Includes interactive prompt to include additional config files for expanded hunting scope.
+- `--compromised`: Enable automated compromise assessment mode using `config/compromise.json`. Analyzes event correlation chains, hunt queries, and high-confidence indicators to calculate compromise likelihood percentage. Provides detailed analysis report with attack chains, critical events, and category breakdowns. Includes interactive prompt to include additional config files for expanded hunting scope. **Always deduplicates events.**
 - `--export-events`: Export all discovered events to file (use with `--compromised` and `-o <file>`). Creates detailed event listings with computer, user, process, source, and description fields. High-confidence indicators are marked with `[HIGH-CONFIDENCE]` tag.
 - `--scoring-breakdown`: Show detailed scoring breakdown for compromise likelihood calculation. Displays event severity distribution, context analysis (LOLBin executions, privileged events, suspicious processes), attack chain details, and final likelihood calculation methodology.
+- `--deduplicate`: Remove duplicate events from results in **regular search mode only** (compromise mode always deduplicates). Events are considered duplicates if they have the same date, event ID, log name, computer, and description. Displays count of removed duplicates.
 
 Scoring and triage output:
 
@@ -786,12 +815,16 @@ python ThreatHunting.py --compromised --date 2025-10-17 --export-events -o only_
 
 ```bash
 python ThreatHunting.py --hours 24 --format text --matrix
+
+# With deduplication to see only unique events
+python ThreatHunting.py --hours 24 --format text --matrix --deduplicate
 ```
 
 Tips:
 
 - Scan with `--categories critical_smoking_gun_indicators` to focus on high-signal events.
 - Add `--level Warning` or `--level Error` to reduce noise.
+- Use `--deduplicate` to remove repeated events (e.g., services restarting multiple times) and focus on unique occurrences.
 
 ### 2) Focus on credential access and privilege escalation
 
@@ -860,6 +893,41 @@ Use this to quickly surface all errors in a time window, then pivot.
 ---
 
 ## Usage Examples and Combinations
+
+### Deduplication Comparison
+
+**Without Deduplication (default in regular mode):**
+```bash
+# Shows all events including duplicates
+python ThreatHunting.py --date 2025-10-17 --config config/simple_privilege.json
+
+# Example output:
+# Found 16,208 matching events  # ← Includes duplicates!
+# Event ID 4697: 400 occurrences  # ← Service restarted 400 times
+# Event ID 1100: 16 occurrences   # ← Log service stopped 16 times
+```
+
+**With Deduplication (--deduplicate flag):**
+```bash
+# Shows only unique events
+python ThreatHunting.py --date 2025-10-17 --config config/simple_privilege.json --deduplicate
+
+# Example output:
+# [Deduplication] Removed 15,931 duplicate event(s), 277 unique event(s) remain
+# Found 277 matching events  # ← Only unique events!
+# Event ID 4697: 25 occurrences  # ← 25 unique service installations
+# Event ID 1100: 1 occurrence    # ← 1 unique log service stop
+```
+
+**Compromise Mode (always deduplicated):**
+```bash
+# Automatically deduplicates all events
+python ThreatHunting.py --compromised --date 2025-10-17
+
+# Output always shows deduplicated counts
+# Total Events Found: 277
+# Compromise Likelihood: 23.5% (accurate, not inflated by duplicates)
+```
 
 General:
 
