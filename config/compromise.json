@@ -1,0 +1,245 @@
+{
+  "authentication_events": [
+    4624, 4625, 4648, 4672, 4768, 4769, 4771, 4776, 4720, 4722, 4725, 4726, 4728
+  ],
+  "compromise_indicators": [
+    1102, 4719, 7045, 4697, 4698, 4104, 4625, 4688, 4624, 4648, 4672, 4702,
+    4700, 1100, 1104, 8004, 8005, 8006, 4680, 4690, 4768, 4769, 4771, 4776
+  ],
+  "correlate_event_chains": [
+    {
+      "name": "RDP/Lateral movement leading to service persistence",
+      "steps": [
+        {
+          "event_id": 4625,
+          "note": "Repeated failed logons (possible brute force)",
+          "source": "Security"
+        },
+        {
+          "event_id": 4624,
+          "note": "Successful logon (LogonType=10 RDP or 3 network)",
+          "source": "Security"
+        },
+        {
+          "event_id": 4672,
+          "note": "Special privileges assigned",
+          "source": "Security"
+        },
+        {
+          "event_id": 4688,
+          "note": "Suspicious process creation (e.g., sc.exe, schtasks.exe)",
+          "source": "Security"
+        },
+        {
+          "event_id": 4697,
+          "note": "Service installed",
+          "source": "Security"
+        },
+        {
+          "event_id": 7045,
+          "note": "Service creation recorded by SCM",
+          "source": "System"
+        },
+        {
+          "event_id": 1003,
+          "note": "Outbound C2-like network connection from the new service process",
+          "source": "Sysmon"
+        }
+      ]
+    },
+    {
+      "name": "PowerShell-based execution and payload retrieval",
+      "steps": [
+        {
+          "event_id": 4648,
+          "note": "Logon with explicit credentials (credential reuse)",
+          "source": "Security"
+        },
+        {
+          "event_id": 4688,
+          "note": "powershell.exe spawned with suspicious command-line",
+          "source": "Security"
+        },
+        {
+          "event_id": 4104,
+          "note": "Script block logging reveals encoded/obfuscated code",
+          "source": "PowerShell"
+        },
+        {
+          "event_id": 1001,
+          "note": "Process lineage confirms LOLBins (rundll32/mshta/regsvr32)",
+          "source": "Sysmon"
+        },
+        {
+          "event_id": 1003,
+          "note": "Network connect to external host for payload",
+          "source": "Sysmon"
+        },
+        {
+          "event_id": 1022,
+          "note": "DNS queries to suspicious domains",
+          "source": "Sysmon"
+        }
+      ]
+    },
+    {
+      "name": "Credential dumping attempt (LSASS access)",
+      "steps": [
+        {
+          "event_id": 4624,
+          "note": "Admin logon on server/workstation",
+          "source": "Security"
+        },
+        {
+          "event_id": 4688,
+          "note": "procdump.exe, comsvcs.dll or similar tool spawned",
+          "source": "Security"
+        },
+        {
+          "event_id": 1010,
+          "note": "ProcessAccess to lsass.exe handle",
+          "source": "Sysmon"
+        },
+        {
+          "event_id": 1011,
+          "note": "FileCreate of memory dump (e.g., C:\\Windows\\Temp\\lsass.dmp)",
+          "source": "Sysmon"
+        },
+        {
+          "event_id": 1102,
+          "note": "Audit log cleared (often post-exfil)",
+          "source": "EventLog"
+        }
+      ]
+    },
+    {
+      "name": "Persistence via scheduled tasks",
+      "steps": [
+        {
+          "event_id": 4698,
+          "note": "Scheduled task created",
+          "source": "Security"
+        },
+        {
+          "event_id": 4702,
+          "note": "Task updated with malicious action",
+          "source": "Security"
+        },
+        {
+          "event_id": 4701,
+          "note": "Task disabled/enabled toggling for stealth",
+          "source": "Security"
+        },
+        {
+          "event_id": 1001,
+          "note": "Task action process create (e.g., powershell.exe)",
+          "source": "Sysmon"
+        }
+      ]
+    },
+    {
+      "name": "Account and group backdoor creation",
+      "steps": [
+        {
+          "event_id": 4720,
+          "note": "New local/domain user created",
+          "source": "Security"
+        },
+        {
+          "event_id": 4722,
+          "note": "Account enabled after creation",
+          "source": "Security"
+        },
+        {
+          "event_id": 4728,
+          "note": "Added to privileged (global) group",
+          "source": "Security"
+        },
+        {
+          "event_id": 4732,
+          "note": "Added to local Administrators group",
+          "source": "Security"
+        },
+        {
+          "event_id": 4735,
+          "note": "Group policy/attributes changed",
+          "source": "Security"
+        }
+      ]
+    }
+  ],
+  "hunt_queries": [
+    {
+      "event_ids": [1102, 1100, 1104, 4719],
+      "name": "Log tampering & audit policy change",
+      "query_examples": {
+        "elastic": "winlog.event_id: (1102 or 1100 or 1104 or 4719)",
+        "sigma_tag": "attack.defense_evasion",
+        "splunk": "index=wineventlog (EventCode=1102 OR EventCode=1100 OR EventCode=1104 OR EventCode=4719) | stats count by host, user, EventCode"
+      }
+    },
+    {
+      "event_ids": [4688, 4103, 4104, 8004, 8005, 8006, 1001, 1003, 1022],
+      "name": "Suspicious PowerShell execution",
+      "query_examples": {
+        "elastic": "(winlog.event_id:4688 AND process.name:powershell.exe) OR winlog.event_id:4104 OR (event.module:sysmon AND winlog.event_id:(1 3 22) AND process.name:powershell.exe)",
+        "sigma_tag": "attack.execution/powershell",
+        "splunk": "index=wineventlog (EventCode=4688 NewProcessName=\"*\\\\powershell.exe*\" OR EventCode=4104) OR (sourcetype=sysmon (EventCode=1 OR EventCode=3 OR EventCode=22) Image=\"*\\\\powershell.exe*\")"
+      }
+    },
+    {
+      "event_ids": [4697, 7045, 7040, 4688, 1001],
+      "name": "Service-based persistence",
+      "query_examples": {
+        "elastic": "winlog.event_id:(4697 or 7045 or 7040) OR (event.module:sysmon AND winlog.event_id:1 AND process.command_line:*\"sc \"*create*)",
+        "sigma_tag": "attack.persistence/service",
+        "splunk": "index=wineventlog (EventCode=4697 OR EventCode=7045 OR EventCode=7040) OR (sourcetype=sysmon EventCode=1 CommandLine=\"*sc * create*\" )"
+      }
+    },
+    {
+      "event_ids": [4698, 4699, 4700, 4701, 4702, 1001],
+      "name": "Scheduled task persistence",
+      "query_examples": {
+        "elastic": "winlog.event_id:(4698 or 4699 or 4700 or 4701 or 4702)",
+        "sigma_tag": "attack.persistence/schtasks",
+        "splunk": "index=wineventlog EventCode IN (4698,4699,4700,4701,4702)"
+      }
+    },
+    {
+      "event_ids": [4625, 4624, 4768, 4769, 4771, 4776],
+      "name": "Kerberoasting / auth anomalies",
+      "query_examples": {
+        "elastic": "winlog.event_id:(4769 or 4771 or 4625)",
+        "sigma_tag": "attack.credential_access/kerberoast",
+        "splunk": "index=wineventlog EventCode IN (4769,4771) OR (EventCode=4625) | stats count by user, service, src_ip"
+      }
+    },
+    {
+      "event_ids": [4688, 1010, 1011],
+      "name": "LSASS access / dump detection",
+      "query_examples": {
+        "elastic": "(event.module:sysmon AND winlog.event_id:(10 11)) OR (winlog.event_id:4688 AND process.command_line:(*procdump* OR *comsvcs.dll*))",
+        "sigma_tag": "attack.credential_access/lsass_dump",
+        "splunk": "index=sysmon EventCode IN (10,11) OR (index=wineventlog EventCode=4688 (CommandLine=\"*procdump*\" OR CommandLine=\"*comsvcs.dll*\"))"
+      }
+    }
+  ],
+  "log_clearing_events": [1102, 1100, 1104],
+  "powershell_events": [4104, 8004, 8005, 8006, 4103],
+  "prioritize_high_confidence_indicators": [
+    1001, 1003, 1010, 1011, 1013, 1022, 1100, 1102, 1104, 4103, 4104, 4697,
+    4698, 4699, 4701, 4719, 4720, 4722, 4725, 4726, 4728, 4732, 4735, 4756,
+    7040, 7045
+  ],
+  "process_events": [4688, 4680, 4690],
+  "service_events": [7045, 4697, 4698, 4702, 4700, 7040, 4699, 4701],
+  "sysmon_mapping": {
+    "1001": "Sysmon 1 \u2014 Process Create",
+    "1003": "Sysmon 3 \u2014 Network Connect",
+    "1010": "Sysmon 10 \u2014 ProcessAccess (useful for LSASS access detection)",
+    "1011": "Sysmon 11 \u2014 FileCreate",
+    "1013": "Sysmon 13 \u2014 Registry value set",
+    "1022": "Sysmon 22 \u2014 DNS query"
+  },
+  "system_events": [4625, 4719, 4732, 4735, 4756]
+}

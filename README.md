@@ -6,11 +6,17 @@ Windows-focused threat hunting utility to rapidly search Windows Event Logs for 
 
 ### Key Features
 
+- **Automated Compromise Assessment** (`--compromised`): Advanced threat detection with event correlation chains, hunt queries, high-confidence indicators, and compromise likelihood scoring
+- **Process-Level Visibility**: Track process names and paths across all event outputs (console, CSV, JSON, file exports)
+- **Flexible Date Filtering**: Search specific dates (`--date`) or time windows (`--hours`), exclude dates from analysis (`--exclude-date`)
+- **Strict Time-Window Scoping**: All compromise summaries (chains, hunt matches, high-confidence, high-risk) honor the selected `--date`, `--from-date/--to-date`, or `--hours` window
+- **Noise‑Resilient Scoring**: De-duplication, per-EventID score caps, temporal coherence weighting, and chain-aware capping to reduce false positives
+- **Safe, Lean Exports**: Export is strictly date-scoped and de-duplicated with markers; regular stdout export is disabled while `--compromised` is active to avoid conflicts
 - Search by curated event IDs grouped into hunting categories
 - Filter by time window, level, log type, source, description, and rich regex field filters (user/process/parent/ip/port/logon-type) with AND/OR/NOT
 - Output in JSON, JSONL (NDJSON), CSV, human-readable text, or matrix view; optional timeline output with sessionization
 - Concurrency and progress bars for faster multi-log scanning; unlimited or capped events with --max-events
-- Risk scoring for each event + triage summaries (Top findings, category/source heatmaps)
+- Risk scoring for each event + triage summaries (Top findings with process info, category/source heatmaps)
 - Tamper and health checks (log clears, policy changes, service stops, time skew, large gaps)
 - Sigma rule matching (load local YAML rules, tag matches, boost scores)
 - IOC-driven hunting (ingest IPs/domains/hashes/substrings; tag matches; boost scores; per-IOC hit summary)
@@ -118,12 +124,456 @@ New curated configs included:
 - `config/kerberos_anomalies.json`: Kerberos requests and failures that often indicate brute force, service ticket abuse, or misconfigurations (4768/4769/4771/4772/4773/4776, etc.).
 - `config/persistence_autoruns.json`: Autoruns and service/task creation/modification (registry run keys 12/13/14, tasks 106/140/4698, services 7040/7045, and installer 4697).
 - `config/network_wfp_anomalies.json`: Windows Filtering Platform allow/deny and related events (5152/5153/5156/5157/5158/5159/5160/5161) to spot suspicious network patterns.
+- **`config/compromise.json`**: Advanced compromise assessment configuration with event correlation chains, hunt queries, and high-confidence indicators for automated threat detection and scoring. Use with `--compromised` flag for comprehensive host compromise analysis.
 
 When to use which:
 
 - Quick incident triage on a workstation: `event_ids.json` or `accessible_events.json`.
 - Deep-dive security review: `privilege_escalation.json` (expect volume) or `advanced_events.json` (if Sysmon present).
 - Environment-specific hunts: start from `custom_events.json` and tailor categories/events.
+- **Automated compromise assessment**: Use `--compromised` flag with `compromise.json` for guided threat hunting with correlation and scoring.
+
+---
+
+## Compromise Hunting and Assessment (`--compromised`)
+
+The `--compromised` flag enables advanced, automated compromise assessment using the `config/compromise.json` configuration file. This mode goes beyond simple event ID matching by:
+
+- **Event Correlation**: Chains multiple related events (e.g., failed logon → successful logon → process creation → service installation) to detect attack patterns
+- **Hunt Queries**: Pre-defined queries targeting specific attack techniques (log tampering, PowerShell execution, persistence mechanisms)
+- **High-Confidence Indicators**: Prioritizes events with strong malicious signals (log clearing, service installations, account manipulation)
+- **Advanced Scoring Methodology**: Sophisticated multi-factor scoring system with event severity levels, context-aware multipliers, temporal weighting, and LOLBin detection
+- **Compromise Likelihood Scoring**: Calculates a percentage score indicating the probability of host compromise based on findings
+- **Interactive Config Selection**: Prompts user to include additional config files (privilege escalation, persistence, PowerShell, etc.) for expanded hunting scope
+- **Detailed Analysis Report**: Provides comprehensive console output with attack chains, critical events, and category breakdowns
+- **Scoring Transparency**: Optional `--scoring-breakdown` flag shows detailed scoring methodology and event classification
+
+### compromise.json Structure
+
+The `compromise.json` file includes several key sections:
+
+```json
+{
+  "authentication_events": [4624, 4625, 4648, 4672, 4768, 4769, 4771, 4776],
+  "compromise_indicators": [1102, 4719, 7045, 4697, 4698, 4104, ...],
+  "prioritize_high_confidence_indicators": [1102, 4104, 4697, 4720, 4728, ...],
+  "correlate_event_chains": [
+    {
+      "name": "RDP/Lateral movement leading to service persistence",
+      "steps": [
+        {"event_id": 4625, "note": "Repeated failed logons", "source": "Security"},
+        {"event_id": 4624, "note": "Successful logon", "source": "Security"},
+        {"event_id": 4688, "note": "Suspicious process creation", "source": "Security"},
+        {"event_id": 4697, "note": "Service installed", "source": "Security"}
+      ]
+    }
+  ],
+  "hunt_queries": [
+    {
+      "name": "Log tampering & audit policy change",
+      "event_ids": [1102, 1100, 1104, 4719],
+      "query_examples": {
+        "splunk": "index=wineventlog (EventCode=1102 OR ...)",
+        "elastic": "winlog.event_id: (1102 or 1100 or ...)"
+      }
+    }
+  ]
+}
+```
+
+### Advanced Scoring Methodology
+
+The compromise likelihood calculation uses a sophisticated multi-factor scoring system:
+
+#### **Event Severity Levels**
+- **CRITICAL (20-25 pts)**: Log clearing, privilege escalation, group membership changes
+- **HIGH (12-18 pts)**: Service installation, account creation, Kerberos failures  
+- **MEDIUM (6-10 pts)**: Failed logons, Kerberos requests, PowerShell events
+- **LOW (2-5 pts)**: Baseline process creation, DNS queries
+
+#### **Context-Aware Multipliers**
+- **LOLBin Execution**: 3x multiplier for any LOLBin from `lolbins_iocs.csv`
+- **Privileged Execution**: 2x multiplier for admin/system/privileged contexts
+- **Suspicious Processes**: 1.5x multiplier for cmd.exe, powershell.exe, etc.
+- **Service Persistence**: 2.5x multiplier for suspicious service names
+- **Task Persistence**: 1.8x multiplier for suspicious scheduled tasks
+- **DNS Query Reduction**: 0.1x multiplier for common DNS queries (prevents false positives)
+
+#### **Temporal Scoring**
+- **Last Hour**: 2.0x multiplier
+- **Last 6 Hours**: 1.5x multiplier  
+- **Last 24 Hours**: 1.2x multiplier
+- **Last 3 Days**: 1.0x multiplier
+- **Older**: 0.8x multiplier
+
+#### **Score Capping and Normalization**
+- **DNS Query Capping**: Limited to 10 points total contribution regardless of quantity
+- **Logarithmic Scaling**: Prevents always hitting 100% for realistic assessments
+- **High Confidence Threshold**: Minimum 25% if high-confidence events found
+
+#### False-Positive Reduction (v1.2)
+- **De-duplication for Scoring**: Events are deduped per day by `(date, event_id, computer, description)` before scoring
+- **Per-EventID Caps**: Each Event ID’s cumulative contribution is capped to avoid noisy categories overwhelming the score
+- **Temporal Coherence**: Clustered indicators in short windows increase likelihood; spread-out events decrease it
+- **Chain Requirement Cap**: If no attack chains detected, overall likelihood is capped (to reduce single-signal false positives)
+- **Strict High-Confidence Set**: Only a curated subset of Event IDs contributes to the high-confidence bonus
+
+### Usage Examples
+
+**Basic Compromise Assessment (24 hours):**
+```bash
+python ThreatHunting.py --compromised --hours 24
+```
+
+**Interactive Config Selection:**
+```bash
+python ThreatHunting.py --compromised --date 2025-10-16
+# Will prompt: "Include other config files? [Y/N] (default: N):"
+```
+
+**With Detailed Scoring Breakdown:**
+```bash
+python ThreatHunting.py --compromised --date 2025-10-16 --scoring-breakdown
+```
+
+**Time-Window Scoping (Single Day):**
+```bash
+# Summaries and exports include ONLY 2025-10-17
+python ThreatHunting.py --compromised --date 2025-10-17 --export-events -o day_2025-10-17.txt
+```
+
+**Time-Window Scoping (Date Range):**
+```bash
+# Summaries and exports include ONLY events from 2025-10-15 through 2025-10-17
+python ThreatHunting.py --compromised --from-date 2025-10-15 --to-date 2025-10-17 --export-events -o range_15_17.txt
+```
+
+**Hours Window (last 6 hours):**
+```bash
+# Summaries and exports scoped to now-6h..now
+python ThreatHunting.py --compromised --hours 6 --export-events -o last6h.txt
+```
+
+**Extended Time Range (7 days):**
+```bash
+python ThreatHunting.py --compromised --hours 168
+```
+
+**Export Full Event Details to File:**
+```bash
+python ThreatHunting.py --compromised --hours 48 --export-events -o compromise_report.txt
+```
+
+**Exclude Specific Dates from Analysis:**
+```bash
+python ThreatHunting.py --compromised --hours 72 --exclude-date 2025-10-20 --exclude-date 2025-10-21
+```
+
+**Combined with Custom Time Range and Export:**
+```bash
+python ThreatHunting.py --compromised --hours 168 --exclude-date 2025-12-25 --export-events -o weekly_assessment.txt
+```
+
+### Output Analysis
+
+The compromise assessment provides a concise console output with summaries, while detailed event lists are available through the `--export-events` option.
+
+#### Console Output (Summaries)
+
+1. **DETECTED ATTACK CHAINS**: Count and summary of correlated event sequences
+   ```
+   DETECTED ATTACK CHAINS (2 found):
+     1. RDP/Lateral movement leading to service persistence (Confidence: 75%, 5 steps)
+     2. Privilege escalation via scheduled task (Confidence: 60%, 3 steps)
+   ```
+
+2. **HUNT QUERY MATCHES**: Count of matched hunting queries
+   ```
+   HUNT QUERY MATCHES (3 queries matched):
+     - Log tampering & audit policy change: 5 event(s)
+     - Suspicious PowerShell execution: 48 event(s)
+     - Service-based persistence: 12 event(s)
+   ```
+
+3. **HIGH-CONFIDENCE INDICATORS**: Count of high-confidence compromise indicators grouped by Event ID
+   ```
+   HIGH-CONFIDENCE INDICATORS (48 found):
+     - Event ID 1102: 3 occurrence(s)
+     - Event ID 4697: 8 occurrence(s)
+     - Event ID 4720: 2 occurrence(s)
+     ... and 5 more event types
+   ```
+
+4. **CRITICAL HIGH-RISK EVENTS**: Count of high-risk events grouped by Event ID
+   ```
+   CRITICAL HIGH-RISK EVENTS (15 found):
+     - Event ID 1102: 3 occurrence(s)
+     - Event ID 4720: 5 occurrence(s)
+     - Event ID 4697: 7 occurrence(s)
+   ```
+
+5. **EVENT CATEGORY BREAKDOWN**: Distribution of findings across categories
+   ```
+   EVENT CATEGORY BREAKDOWN:
+     - prioritize_high_confidence_indicators: 48 event(s)
+     - authentication_events: 156 event(s)
+     - service_events: 12 event(s)
+   ```
+
+6. **COMPROMISE LIKELIHOOD SCORE**: Overall assessment percentage
+   ```
+   [!] HIGH RISK: 85.3% - Strong indicators of compromise detected!
+   [!] MEDIUM RISK: 55.2% - Some indicators of compromise detected
+   [OK] LOW RISK: 12.1% - No significant indicators detected
+   ```
+
+7. **SCORING BREAKDOWN** (with `--scoring-breakdown` flag):
+   ```
+   SCORING BREAKDOWN:
+   ==================================================
+   Event Severity Distribution:
+     Critical (20+ pts): 2 events
+     High (12-19 pts): 8 events
+     Medium (6-11 pts): 15 events
+     Low (2-5 pts): 240 events
+   
+   Context Analysis:
+     LOLBin executions: 3
+     Privileged executions: 5
+     Suspicious processes: 12
+   
+   Attack Chains: 1 detected
+     Chain 1: RDP/Lateral movement leading to service persistence (confidence: 75.0%)
+       - Contains LOLBin execution
+       - Contains privileged execution
+   
+   Final Likelihood: 56.6%
+   ==================================================
+   ```
+
+#### File Export (Detailed Events with Markers)
+
+When using `--export-events` with `-o`, all discovered events are written to a file with complete details and markers indicating their significance:
+
+**Marker Legend:**
+- `[HIGH-CONFIDENCE]` = High-confidence compromise indicator
+- `[HIGH-RISK]` = Critical high-risk event
+- `[ATTACK-CHAIN]` = Part of detected attack chain
+- `[HUNT-QUERY]` = Matched hunt query
+
+**Example Export:**
+```
+ALL DISCOVERED EVENTS (156 total):
+================================================================================
+Markers:
+  [HIGH-CONFIDENCE] = High-confidence compromise indicator
+  [HIGH-RISK] = Critical high-risk event
+  [ATTACK-CHAIN] = Part of detected attack chain
+  [HUNT-QUERY] = Matched hunt query
+================================================================================
+
+[2025-10-20 14:23:45] Security Event 4688 [HIGH-CONFIDENCE] [ATTACK-CHAIN] [HUNT-QUERY]
+  Computer: WORKSTATION-01
+  User: DOMAIN\user
+  Process: C:\Windows\System32\powershell.exe
+  Source: Microsoft-Windows-Security-Auditing
+  Description: A new process has been created...
+--------------------------------------------------------------------------------
+
+[2025-10-20 14:25:10] Security Event 4697 [HIGH-CONFIDENCE] [HIGH-RISK]
+  Computer: WORKSTATION-01
+  User: DOMAIN\admin
+  Process:
+  Source: Microsoft-Windows-Security-Auditing
+  Service Name: MaliciousService
+  Service Path: C:\Temp\malware.exe
+  Description: A service was installed in the system...
+--------------------------------------------------------------------------------
+
+[2025-10-20 14:26:30] Security Event 4698 [HIGH-CONFIDENCE] [HUNT-QUERY]
+  Computer: WORKSTATION-01
+  User: DOMAIN\admin
+  Process:
+  Source: Microsoft-Windows-Security-Auditing
+  Task Name: \Microsoft\Windows\UpdateTask
+  Task Command: powershell.exe -ExecutionPolicy Bypass -File C:\Temp\backdoor.ps1
+  Description: A scheduled task was created...
+--------------------------------------------------------------------------------
+```
+
+**Multiple Markers:** Events can have multiple markers if they match different criteria. For example, an event that is both a high-confidence indicator AND part of an attack chain will show: `[HIGH-CONFIDENCE] [ATTACK-CHAIN]`
+
+**Enhanced Event Details:**
+The tool automatically extracts and displays:
+- **Service installations** (Event ID 4697, 7045): Service name and installation path
+- **Scheduled tasks** (Event ID 4698, 106, 140, etc.): Task name, command, and arguments
+- **Process creation**: Full process path and parent process
+- **Network connections**: IP addresses and ports
+- **Authentication**: Logon types and user accounts
+
+**Benefits of This Approach:**
+- Console output remains clean and easy to scan
+- File export contains comprehensive details for investigation
+- Markers help prioritize which events to investigate first
+- Summaries provide quick overview of compromise indicators
+- Service and task details aid in malware persistence detection
+
+**Disclaimer:**
+The compromise likelihood percentage is indicative only and represents a probabilistic assessment. Always conduct thorough manual investigation before drawing conclusions about system compromise.
+
+#### Scoping & Export Guarantees
+- All console summaries (Detected Attack Chains, Hunt Query Matches, High‑Confidence Indicators, Critical High‑Risk Events, Category Breakdown) are computed strictly from the selected time window
+- Exported events are re-filtered to the selected time window and de‑duplicated; the count shown in the export header reflects this filtered set
+- While `--compromised` is active, the regular stdout export is disabled; only the compromise export writes to `-o` to avoid file conflicts/duplication
+
+### Recent Improvements
+
+#### **Advanced Scoring Methodology (v1.1)**
+- **Multi-Factor Scoring**: Event severity levels, context-aware multipliers, temporal weighting, and LOLBin detection
+- **DNS Query Handling**: Reduced false positives from common DNS queries with intelligent scoring and capping
+- **Context-Aware Analysis**: LOLBin execution (3x), privileged execution (2x), suspicious processes (1.5x)
+- **Temporal Weighting**: Recent events weighted higher (2x for last hour, 1.5x for last 6 hours)
+- **Score Normalization**: Logarithmic scaling prevents unrealistic 100% scores
+
+#### **Interactive Config Selection**
+- **User Choice**: Prompts to include additional config files (privilege escalation, persistence, PowerShell, etc.)
+- **Default Behavior**: Uses only `compromise.json` for focused analysis
+- **Expanded Scope**: Option to include 8 additional config files for comprehensive hunting
+
+#### **Enhanced Date Filtering**
+- **Precise Filtering**: Accurate date range filtering for single-day and multi-day searches
+- **Event Count Optimization**: Proper handling of high-volume events (DNS queries, process creation)
+- **Temporal Accuracy**: Events filtered to exact date boundaries (00:00:00 to 23:59:59)
+
+#### **Scoring Transparency**
+- **Detailed Breakdown**: `--scoring-breakdown` flag shows methodology and event classification
+- **Event Distribution**: Shows critical, high, medium, and low severity event counts
+- **Context Analysis**: Displays LOLBin executions, privileged events, and suspicious processes
+- **Chain Analysis**: Details detected attack chains with confidence levels
+
+---
+
+## Date-Based Searching
+
+### Specific Date Search (`--date`)
+
+Search for events from a specific date only instead of using a time window with `--hours`. The search covers the full 24-hour period (00:00:00 to 23:59:59) of the specified date.
+
+**Search Single Date:**
+```bash
+# Search only events from December 31, 2025
+python ThreatHunting.py --date 2025-12-31
+```
+
+**Compromise Assessment for Specific Date:**
+```bash
+# Check for compromise indicators on a specific day
+python ThreatHunting.py --compromised --date 2025-10-20 --export-events -o oct20_assessment.txt
+```
+
+**Specific Date with Config:**
+```bash
+# Search for Sysmon events from a specific date
+python ThreatHunting.py --date 2025-12-25 --config config/sysmon_core.json --format json
+```
+
+**Date Format:** YYYY-MM-DD
+
+Key features:
+- Overrides `--hours` parameter when both are specified
+- Searches full 24-hour period of the date
+- Works with all output formats (JSON, CSV, text, matrix)
+- Compatible with all search modes (regular, compromised, remote hosts)
+- Displays date search info in output:
+  ```
+  Searching for specific date: 2025-12-31 (full day)
+  Time range: 2025-12-31 00:00:00 to 2025-12-31 23:59:59
+  ```
+
+### Date Range Search (`--from-date` and `--to-date`)
+
+Search for events within a specific date range. Both arguments must be used together and override both `--hours` and `--date`.
+
+**Basic Date Range:**
+```bash
+# Search events from January 1-7, 2026
+python ThreatHunting.py --from-date 2026-01-01 --to-date 2026-01-07
+```
+
+**Compromise Assessment for Date Range:**
+```bash
+# Check for compromise indicators over a week
+python ThreatHunting.py --compromised --from-date 2025-10-14 --to-date 2025-10-20 --export-events -o week_assessment.txt
+```
+
+**Extended Investigation Period:**
+```bash
+# Search Sysmon events over a month
+python ThreatHunting.py --from-date 2025-12-01 --to-date 2025-12-31 --config config/sysmon_core.json
+```
+
+**Date Range with Exclusions:**
+```bash
+# Search a range but exclude specific dates (e.g., maintenance windows)
+python ThreatHunting.py --from-date 2025-11-01 --to-date 2025-11-30 --exclude-date 2025-11-15 --exclude-date 2025-11-16
+```
+
+**Date Format:** YYYY-MM-DD
+
+Key features:
+- Both `--from-date` and `--to-date` are required when using date ranges
+- Searches from 00:00:00 of `--from-date` to 23:59:59 of `--to-date`
+- Overrides both `--hours` and `--date` parameters
+- Validates that from-date is earlier than to-date
+- Works with all output formats (JSON, CSV, text, matrix)
+- Compatible with all search modes (regular, compromised, remote hosts)
+- Displays date range info in output:
+  ```
+  Searching date range: 2026-01-01 to 2026-01-07
+  Time range: 2026-01-01 00:00:00 to 2026-01-07 23:59:59
+  ```
+
+**Use Cases:**
+- Investigate incidents on a known date
+- Analyze activity during specific business days
+- Compare events across different dates
+- Audit historical activity
+- Post-mortem analysis of specific dates
+
+---
+
+## Date Exclusion (`--exclude-date`)
+
+Filter out events from specific dates during analysis. Useful for excluding known maintenance windows, scheduled updates, or non-business days.
+
+**Exclude Single Date:**
+```bash
+python ThreatHunting.py --hours 72 --exclude-date 2025-12-25
+```
+
+**Exclude Multiple Dates:**
+```bash
+python ThreatHunting.py --compromised --hours 168 --exclude-date 2025-12-24 --exclude-date 2025-12-25 --exclude-date 2025-12-26
+```
+
+**Combined with Specific Date Search:**
+```bash
+# This doesn't make sense, but technically possible - search specific date while excluding it
+# Better usage: search a range with --hours and exclude specific dates within that range
+python ThreatHunting.py --hours 168 --exclude-date 2025-12-25 --exclude-date 2025-12-26
+```
+
+**Date Format:** YYYY-MM-DD
+
+The exclusion filter:
+- Removes events matching the specified date(s) from all results
+- Works with all search modes (regular, compromised, remote hosts)
+- Can be combined with `--hours` or `--date`
+- Displays excluded dates in search parameters:
+  ```
+  Time range: 2025-12-20 10:00:00 to 2025-12-27 10:00:00
+  Excluding dates: 2025-12-25, 2025-12-26
+  ```
 
 ---
 
@@ -185,6 +635,10 @@ python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 192.168.1.1
 ## Argument Reference
 
 - `--hours <int>`: Time window to search backward from now (default: 24).
+- `--date <YYYY-MM-DD>`: Search for events from a specific date only (full 24-hour period). Overrides `--hours`. Format: YYYY-MM-DD (e.g., `--date 2025-12-31`).
+- `--from-date <YYYY-MM-DD>`: Start date for date range search. Must be used with `--to-date`. Overrides both `--hours` and `--date`.
+- `--to-date <YYYY-MM-DD>`: End date for date range search. Must be used with `--from-date`. Overrides both `--hours` and `--date`.
+- `--exclude-date <YYYY-MM-DD>`: Exclude events from specific date(s). Can be used multiple times (e.g., `--exclude-date 2025-12-25 --exclude-date 2025-12-26`). Works with all search modes and date options.
 - `--format {json,text,csv}`: Output format (default: text).
 - `--format {json,jsonl,text,csv}`: Output format (default: text). `jsonl` prints one JSON object per line.
 - `--categories <list>`: Limit search to one or more category names.
@@ -244,6 +698,12 @@ python ThreatHunting.py --hours 24 --all-events --hosts 192.168.1.10 192.168.1.1
 - `--sigma-dir <path>`: Directory with Sigma YAML rules to evaluate locally (simple selection support).
 - `--sigma-boost <int>`: Score boost per matched Sigma rule (default 10).
 
+Compromise hunting and assessment:
+
+- `--compromised`: Enable automated compromise assessment mode using `config/compromise.json`. Analyzes event correlation chains, hunt queries, and high-confidence indicators to calculate compromise likelihood percentage. Provides detailed analysis report with attack chains, critical events, and category breakdowns. Includes interactive prompt to include additional config files for expanded hunting scope.
+- `--export-events`: Export all discovered events to file (use with `--compromised` and `-o <file>`). Creates detailed event listings with computer, user, process, source, and description fields. High-confidence indicators are marked with `[HIGH-CONFIDENCE]` tag.
+- `--scoring-breakdown`: Show detailed scoring breakdown for compromise likelihood calculation. Displays event severity distribution, context analysis (LOLBin executions, privileged events, suspicious processes), attack chain details, and final likelihood calculation methodology.
+
 Scoring and triage output:
 
 - Every result includes `score` (0–100) and `risk_reasons` in JSON; text/matrix/CSV include `score`.
@@ -275,6 +735,52 @@ Elevation and warnings:
 ## Quick-Start Threat Hunting Playbooks
 
 Below are concise playbooks for triaging a potentially compromised Windows workstation (assuming logs are intact). Run the console as Administrator if possible.
+
+### 0) **Automated Compromise Assessment (Recommended First Step)**
+
+```bash
+# Quick 24-hour assessment
+python ThreatHunting.py --compromised --hours 24
+
+# Extended 7-day assessment with detailed export
+python ThreatHunting.py --compromised --hours 168 --export-events -o compromise_assessment.txt
+
+# Exclude maintenance windows
+python ThreatHunting.py --compromised --hours 72 --exclude-date 2025-10-20
+
+# Investigate specific incident date
+python ThreatHunting.py --compromised --date 2025-10-15 --export-events -o incident_oct15.txt
+
+# Interactive config selection (prompts to include additional configs)
+python ThreatHunting.py --compromised --date 2025-10-16
+
+# With detailed scoring breakdown
+python ThreatHunting.py --compromised --date 2025-10-16 --scoring-breakdown
+```
+
+```bash
+# Strict scoping (verify output is only for the selected date)
+python ThreatHunting.py --compromised --date 2025-10-17 --export-events -o only_17.txt
+# PowerShell quick checks:
+# Get-Content only_17.txt | Select-String "^\[2025-10-17 " | Measure-Object
+# Get-Content only_17.txt | Select-String "^\[2025-10-(?!17)\d{2} " | Measure-Object
+```
+
+**What it does:**
+- Automatically correlates events into attack chains
+- Identifies high-confidence compromise indicators
+- Calculates compromise likelihood percentage using advanced multi-factor scoring
+- Prompts user to include additional config files for expanded hunting scope
+- Provides detailed scoring breakdown with `--scoring-breakdown` flag
+- Handles common events (DNS queries) intelligently to reduce false positives
+- Provides structured analysis report
+- Exports full event details with process information
+
+**Recommended for:**
+- Initial triage of suspected compromises
+- Rapid assessment of unknown threats
+- Post-incident validation
+- Routine security checks
 
 ### 1) Broad suspicious activity sweep (last 24h)
 

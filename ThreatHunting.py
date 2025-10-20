@@ -112,88 +112,88 @@ def print_config_diff(diff, quiet=False):
 def get_default_events():
     """Get default Event IDs if no JSON file is provided"""
     return {
-    "credential_access_and_privilege_escalation": [
-        4624,  # Logon success
-        4625,  # Logon failure
-        4648,  # Logon with explicit credentials
-        4672,  # Special privileges assigned
-        4688,  # Process creation
-        4697,  # Service installation (Security)
-        7045,  # Service installed (System)
-        4732,  # Member added to a privileged local group
-        4728,  # Member added to global group (privilege group)
-        4756,  # Member added to universal group
-        1102,  # Audit log cleared
-    ],
+        "credential_access_and_privilege_escalation": [
+            4624,  # Logon success
+            4625,  # Logon failure
+            4648,  # Logon with explicit credentials
+            4672,  # Special privileges assigned
+            4688,  # Process creation
+            4697,  # Service installation (Security)
+            7045,  # Service installed (System)
+            4732,  # Member added to a privileged local group
+            4728,  # Member added to global group (privilege group)
+            4756,  # Member added to universal group
+            1102,  # Audit log cleared
+        ],
 
-    "persistence_and_startup_modification": [
+        "persistence_and_startup_modification": [
             # Process creation (already listed above) - kept so category is self-contained
             4688,
-        7040,  # Service configuration changed
-        7045,  # Service installed (dup)
-        12,    # (mentioned) registry/startup related IDs in checklist
-        13,    # (mentioned)
-        14,    # (mentioned)
-        106,   # TaskScheduler - task created/modified (mentioned)
-        140,   # TaskScheduler - task created/modified (mentioned)
-        4698,  # Scheduled task creation (also a smoking-gun indicator)
-    ],
+            7040,  # Service configuration changed
+            7045,  # Service installed (dup)
+            12,    # (mentioned) registry/startup related IDs in checklist
+            13,    # (mentioned)
+            14,    # (mentioned)
+            106,   # TaskScheduler - task created/modified (mentioned)
+            140,   # TaskScheduler - task created/modified (mentioned)
+            4698,  # Scheduled task creation (also a smoking-gun indicator)
+        ],
 
-    "lateral_movement_and_remote_access": [
-        4624,  # Logon success (network / RDP types)
-        4648,  # Explicit credential use (lateral movement)
-        4776,  # Credential validation using NTLM
-        5140,  # Network share object accessed
-        5142,  # Network share created
-        5145,  # File share object checked/accessed
-        7045,  # Service installed remotely
-    ],
+        "lateral_movement_and_remote_access": [
+            4624,  # Logon success (network / RDP types)
+            4648,  # Explicit credential use (lateral movement)
+            4776,  # Credential validation using NTLM
+            5140,  # Network share object accessed
+            5142,  # Network share created
+            5145,  # File share object checked/accessed
+            7045,  # Service installed remotely
+        ],
 
-    "execution_and_defense_evasion": [
-        4688,  # Process creation
-        4689,  # Process termination
-        4104,  # PowerShell Script Block Logging
-        4103,  # PowerShell Module Logging / pipeline events
-        600,   # WMI / WinRM activity (mentioned)
-        4100,  # PowerShell engine events (mentioned)
-        1116,  # Windows Defender detection events (example)
-        1117,  # Windows Defender remediation actions (example)
-    ],
+        "execution_and_defense_evasion": [
+            4688,  # Process creation
+            4689,  # Process termination
+            4104,  # PowerShell Script Block Logging
+            4103,  # PowerShell Module Logging / pipeline events
+            600,   # WMI / WinRM activity (mentioned)
+            4100,  # PowerShell engine events (mentioned)
+            1116,  # Windows Defender detection events (example)
+            1117,  # Windows Defender remediation actions (example)
+        ],
 
-    "exfiltration_and_c2": [
-        5156,  # Windows Filtering Platform — allowed connection
-        5157,  # Windows Filtering Platform — blocked connection
+        "exfiltration_and_c2": [
+            5156,  # Windows Filtering Platform — allowed connection
+            5157,  # Windows Filtering Platform — blocked connection
             # Process creation showing data transfer tools (curl/certutil/powershell)
             4688,
             # (mentioned in checklist) — e.g., Sysmon-like network/file events (kept as mentioned)
             400,
-        403,   # (mentioned)
-        600,   # (again) WMI / other activity used for remote exec or transfer
-    ],
+            403,   # (mentioned)
+            600,   # (again) WMI / other activity used for remote exec or transfer
+        ],
 
-    "critical_smoking_gun_indicators": [
-        1102,  # Audit logs cleared
-        4698,  # Scheduled task created
-        7045,  # Service installed
-        4688,  # Suspicious process creation
-        10,    # Sysmon 10 (LSASS/process access)
-        4104,  # Malicious PowerShell script block
-        4732,  # Privileged group membership changes
-        4728,  # Privileged group membership changes (dup)
-        5156,  # Unusual outbound connections
-        5157,  # Suspicious blocked/allowed connections
-    ],
+        "critical_smoking_gun_indicators": [
+            1102,  # Audit logs cleared
+            4698,  # Scheduled task created
+            7045,  # Service installed
+            4688,  # Suspicious process creation
+            10,    # Sysmon 10 (LSASS/process access)
+            4104,  # Malicious PowerShell script block
+            4732,  # Privileged group membership changes
+            4728,  # Privileged group membership changes (dup)
+            5156,  # Unusual outbound connections
+            5157,  # Suspicious blocked/allowed connections
+        ],
 
-    "correlation_and_hunting_helpers": [
-        4689,  # Process termination
-        4624,  # Logon success
-        4625,  # Logon failure
-        4648,  # Explicit credential use
-        4776,  # NTLM auth attempts
-        5140,  # Share access
-        5145,  # Share/file access
-    ],
-}
+        "correlation_and_hunting_helpers": [
+            4689,  # Process termination
+            4624,  # Logon success
+            4625,  # Logon failure
+            4648,  # Explicit credential use
+            4776,  # NTLM auth attempts
+            5140,  # Share access
+            5145,  # Share/file access
+        ],
+    }
 
 
 # Global variable to store loaded events - initialize with defaults
@@ -204,15 +204,16 @@ ALL_EVENT_IDS = None
 class WindowsEventLogSearcher:
     def __init__(self, sigma_rules=None, sigma_boost=10, iocs=None, ioc_boost=5,
                  remote_hosts=None, timeout=30, parallel_hosts=5, username=None,
-                 password=None, domain=None, auth_method='winrm'):
+                 password=None, domain=None, auth_method='winrm', exclude_dates=None, lolbins_set=None):
         self.logs = ['Application', 'Security', 'Setup', 'System']
         self.results = []
         self.sigma_rules = sigma_rules or []
         self.sigma_boost = sigma_boost
         self.iocs = iocs or {'ips': set(), 'domains': set(),
-                                        'hashes': set(), 'substrings': set()}
+                             'hashes': set(), 'substrings': set()}
         self.ioc_boost = ioc_boost
         self.ioc_hits_counter = {}
+        self.lolbins_set = lolbins_set or set()  # Set of LOLBin executable names from lolbins_iocs.csv
         self.remote_hosts = remote_hosts or []
         self.timeout = timeout
         self.parallel_hosts = parallel_hosts
@@ -220,6 +221,7 @@ class WindowsEventLogSearcher:
         self.password = password
         self.domain = domain
         self.auth_method = auth_method
+        self.exclude_dates = exclude_dates or []
 
     def _query_remote_host(self, host, event_ids, hours_back, level_filter, level_all, log_filter, source_filter, description_filter, field_filters, bool_logic, negate, max_events):
         """Query a single remote host for event logs"""
@@ -459,13 +461,17 @@ class WindowsEventLogSearcher:
             # Apply IOCs
             self._apply_iocs(event)
 
-    def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, concurrency=1, progress=False, allowlist=None, suppress_rules=None):
+    def search_event_ids(self, event_ids, hours_back=24, output_format='json', level_filter=None, level_all=False, matrix_format=False, log_filter=None, 
+                         source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, max_events=0, concurrency=1, progress=False, allowlist=None, suppress_rules=None, specific_date=None, from_date=None, to_date=None):
         """
         Search for specific Event IDs in Windows Event Logs
 
         Args:
             event_ids (list): List of Event IDs to search for
             hours_back (int): How many hours back to search (default: 24)
+            specific_date (str): Search only events from a specific date (YYYY-MM-DD), overrides hours_back
+            from_date (str): Start date for date range (YYYY-MM-DD), use with to_date
+            to_date (str): End date for date range (YYYY-MM-DD), use with from_date
             output_format (str): Output format - 'json', 'text', or 'csv'
             level_filter (str): Filter events by level (Error, Warning, Information, etc.)
             level_all (bool): If True, search for all events of the specified level, ignoring Event ID filter
@@ -474,7 +480,36 @@ class WindowsEventLogSearcher:
             source_filter (str): Filter results where source contains this string
             description_filter (str): Filter results where description contains this string
         """
-        start_time = datetime.now() - timedelta(hours=hours_back)
+        # Handle date range if provided
+        if from_date and to_date:
+            try:
+                # Parse the date range
+                start_date = datetime.strptime(from_date, '%Y-%m-%d')
+                end_date = datetime.strptime(to_date, '%Y-%m-%d')
+                start_time = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_time = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                if start_time > end_time:
+                    print(f"Error: --from-date ({from_date}) must be earlier than --to-date ({to_date}).")
+                    return
+            except ValueError as e:
+                print(f"Error: Invalid date format. Expected YYYY-MM-DD. {e}")
+                return
+        elif from_date or to_date:
+            print("Error: Both --from-date and --to-date must be specified together.")
+            return
+        # Handle specific date if provided (and no date range)
+        elif specific_date:
+            try:
+                # Parse the specific date and set time range to that full day
+                target_date = datetime.strptime(specific_date, '%Y-%m-%d')
+                start_time = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_time = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError:
+                print(f"Error: Invalid date format '{specific_date}'. Expected YYYY-MM-DD.")
+                return
+        else:
+            start_time = datetime.now() - timedelta(hours=hours_back)
+            end_time = datetime.now()
 
         if not quiet:
             if level_all:
@@ -484,9 +519,15 @@ class WindowsEventLogSearcher:
                 print(f"Searching for Event IDs: {event_ids}")
                 if level_filter:
                     print(f"Level filter: {level_filter}")
+            if from_date and to_date:
+                print(f"Searching date range: {from_date} to {to_date}")
+            elif specific_date:
+                print(f"Searching for specific date: {specific_date} (full day)")
             print(
-                f"Time range: {start_time.strftime('%Y-%m-%d %H:%M:%S')} to {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                f"Time range: {start_time.strftime('%Y-%m-%d %H:%M:%S')} to {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"Logs: {', '.join(self.logs)}")
+            if self.exclude_dates:
+                print(f"Excluding dates: {', '.join(self.exclude_dates)}")
             print("-" * 80)
 
         self.level_filter = level_filter
@@ -523,7 +564,7 @@ class WindowsEventLogSearcher:
             for idx, f in enumerate(files):
                 try:
                     self._search_evtx_file(
-                        f, event_ids, start_time, position=idx)
+                        f, event_ids, start_time, end_time, position=idx)
                 except Exception as e:
                     print(f"Error parsing {f}: {e}")
             self._output_results(output_format)
@@ -554,7 +595,7 @@ class WindowsEventLogSearcher:
                 if use_progress:
                     pbar = tqdm(
                         total=total, desc=f"{log_name}", position=position, leave=False)
-                lst = self._search_log(log_name, event_ids, start_time, pbar)
+                lst = self._search_log(log_name, event_ids, start_time, end_time, pbar)
                 if pbar is not None:
                     pbar.close()
                 return lst
@@ -580,7 +621,7 @@ class WindowsEventLogSearcher:
 
         self._output_results(output_format)
 
-    def _search_log(self, log_name, event_ids, start_time, pbar=None):
+    def _search_log(self, log_name, event_ids, start_time, end_time, pbar=None):
         """Search a specific event log for the given Event IDs"""
         try:
             # Try to enable security privilege if accessing Security log
@@ -612,8 +653,11 @@ class WindowsEventLogSearcher:
                         events_checked += 1
                         # Check if event is within our time range
                         event_time = event.TimeGenerated
-                        if event_time < start_time:
-                            # We've gone past our time window; stop processing this batch item
+                        if event_time < start_time or event_time > end_time:
+                            # Event is outside our time window
+                            if event_time < start_time:
+                                # We've gone past our time window; stop processing this batch item
+                                continue
                             continue
 
                         # Check if this is one of our target Event IDs (or if we're in level_all mode)
@@ -669,7 +713,7 @@ class WindowsEventLogSearcher:
                 print(f"Error reading {log_name} log: {e}")
             return []
 
-    def _search_evtx_file(self, path, event_ids, start_time, position=0):
+    def _search_evtx_file(self, path, event_ids, start_time, end_time, position=0):
         if EvtxReader is None:
             print("Evtx parsing not available. Install python-evtx.")
             return
@@ -701,7 +745,7 @@ class WindowsEventLogSearcher:
                                     ts.split('.')[0], '%Y-%m-%dT%H:%M:%S')
                         else:
                             ts_dt = datetime.min
-                        if ts_dt < start_time:
+                        if ts_dt < start_time or ts_dt > end_time:
                             continue
                         # Channel/Provider/EventID
                         log_name = root.findtext(
@@ -794,7 +838,12 @@ class WindowsEventLogSearcher:
                 'parent': enrich.get('parent'),
                 'ip': enrich.get('ip'),
                 'port': enrich.get('port'),
-                'logon_type': enrich.get('logon_type')
+                'logon_type': enrich.get('logon_type'),
+                'service_name': enrich.get('service_name'),
+                'service_path': enrich.get('service_path'),
+                'task_name': enrich.get('task_name'),
+                'task_command': enrich.get('task_command'),
+                'task_arguments': enrich.get('task_arguments')
             }
 
             # Assign risk score and reasons
@@ -820,7 +869,7 @@ class WindowsEventLogSearcher:
                         'score', 0) + self.ioc_boost * len(hits)
 
             # Apply field filters if provided
-            if self._matches_field_filters(event_data) and not self._is_suppressed(event_data):
+            if self._matches_field_filters(event_data) and not self._is_suppressed(event_data) and not self._is_date_excluded(event_data):
                 self.results.append(event_data)
 
         except Exception as e:
@@ -847,31 +896,34 @@ class WindowsEventLogSearcher:
     def _output_results(self, output_format):
         """Output results in the specified format"""
         if not self.results:
-            print("No matching events found.")
+            if not self.quiet:
+                print("No matching events found.")
             return
 
         if not self.quiet:
             print(f"\nFound {len(self.results)} matching events:")
             print("=" * 80)
 
-        if self.matrix_format:
-            self._output_matrix()
-        elif output_format == 'json':
-            print(json.dumps(self.results, indent=2, default=str))
-        elif output_format == 'jsonl':
-            for e in self.results:
-                print(json.dumps(e, default=str))
-        elif output_format == 'csv':
-            self._output_csv()
-        else:  # text format
-            self._output_text()
+        # Only output results if not in quiet mode
+        if not self.quiet:
+            if self.matrix_format:
+                self._output_matrix()
+            elif output_format == 'json':
+                print(json.dumps(self.results, indent=2, default=str))
+            elif output_format == 'jsonl':
+                for e in self.results:
+                    print(json.dumps(e, default=str))
+            elif output_format == 'csv':
+                self._output_csv()
+            else:  # text format
+                self._output_text()
 
-        # After main output, print triage summaries
-        self._output_triage_summaries()
-        # Tamper and health checks
-        self._output_tamper_health_checks()
-        # IOC summary
-        self._output_ioc_summary()
+            # After main output, print triage summaries
+            self._output_triage_summaries()
+            # Tamper and health checks
+            self._output_tamper_health_checks()
+            # IOC summary
+            self._output_ioc_summary()
 
     def send_sinks(self, webhook_url=None, hec_url=None, hec_token=None, batch_size=500, use_jsonl=False):
         """Send results to webhook or Splunk HEC endpoints."""
@@ -902,7 +954,7 @@ class WindowsEventLogSearcher:
                             f"Webhook sink POST failed: {r.status_code} {r.text[:120]}")
             if hec_url and hec_token:
                 headers = {'Authorization': f'Splunk {hec_token}',
-                    'Content-Type': 'application/json'}
+                           'Content-Type': 'application/json'}
                 for chunk in batches(self.results, max(1, batch_size)):
                     payload = '\n'.join(_json.dumps(
                         {'event': item}, default=str) for item in chunk)
@@ -926,8 +978,14 @@ class WindowsEventLogSearcher:
             print("-" * 80)
             for i, e in enumerate(top, 1):
                 description_clean = e['description'][:80].replace('\n', ' ')
+                
+                # Add process name if available
+                process_info = ""
+                if e.get('process'):
+                    process_info = f" [{e.get('process')}]"
+                
                 print(
-                    f"{i:>2}. [{e.get('score', 0)}] EID {e['event_id']} {e['log_name']} {e['source']} - {e['timestamp']} :: {description_clean}")
+                    f"{i:>2}. [{e.get('score', 0)}] EID {e['event_id']} {e['log_name']} {e['source']} - {e['timestamp']}{process_info} :: {description_clean}")
 
             # Heatmaps/counts by category and source
             from collections import Counter
@@ -1039,7 +1097,7 @@ class WindowsEventLogSearcher:
 
         # CSV header
         headers = ['timestamp', 'log_name', 'event_id', 'level', 'score',
-                   'source', 'computer', 'category', 'description']
+                   'source', 'computer', 'process', 'category', 'description']
         print(','.join(headers))
 
         # CSV data
@@ -1076,6 +1134,24 @@ class WindowsEventLogSearcher:
             print(f"    Source: {event['source']}")
             computer = event.get('computer') or event.get('remote_host') or ''
             print(f"    Computer: {computer}")
+            process = event.get('process') or ''
+            print(f"    Process: {process}")
+            
+            # Display service information for service events
+            if event.get('service_name'):
+                print(f"    Service Name: {event.get('service_name')}")
+            if event.get('service_path'):
+                print(f"    Service Path: {event.get('service_path')}")
+            
+            # Display task information for scheduled task events
+            if event.get('task_name'):
+                print(f"    Task Name: {event.get('task_name')}")
+            if event.get('task_command'):
+                full_cmd = event.get('task_command')
+                if event.get('task_arguments'):
+                    full_cmd += f" {event.get('task_arguments')}"
+                print(f"    Task Command: {full_cmd}")
+            
             if event.get('sigma_matches'):
                 print(
                     f"    Sigma: {', '.join(event.get('sigma_matches', []))}")
@@ -1143,6 +1219,7 @@ class WindowsEventLogSearcher:
         parent = (e.get('parent') or '').lower()
         source = (e.get('source') or '').lower()
         user = (e.get('user') or '')
+        description = (e.get('description') or '').lower()
 
         # Sensitive events
         high_signal_eids = {1102, 4698, 7045, 4688, 4732, 4728, 4756, 4776}
@@ -1151,9 +1228,11 @@ class WindowsEventLogSearcher:
             reasons.append(f"Sensitive EventID {eid}")
 
         # Privileged context
-        if eid == 4672 or 'special privileges' in (e.get('description') or '').lower():
+        has_privileges = False
+        if eid == 4672 or 'special privileges' in description:
             score += 25
             reasons.append("Privileged logon context")
+            has_privileges = True
 
         # Category weights
         if 'critical_smoking_gun_indicators' in category:
@@ -1166,12 +1245,49 @@ class WindowsEventLogSearcher:
             score += 15
             reasons.append("Persistence category")
 
-        # LOLBins and suspicious tooling
-        lolbins = ['powershell.exe', 'cmd.exe', 'rundll32.exe', 'regsvr32.exe', 'mshta.exe', 'wscript.exe',
-            'cscript.exe', 'certutil.exe', 'bitsadmin.exe', 'schtasks.exe', 'psexec', 'wmic.exe']
-        if any(x in process for x in lolbins):
-            score += 20
-            reasons.append("Suspicious LOLBin process")
+        # Check if process is in LOLBins IOC list (from lolbins_iocs.csv)
+        lolbin_match = False
+        if process and hasattr(self, 'lolbins_set') and self.lolbins_set:
+            # Extract just the executable name from full path
+            process_name = process.split('\\')[-1].strip()
+            if process_name in self.lolbins_set or any(lolbin in process for lolbin in self.lolbins_set):
+                score += 35  # Higher score for known LOLBins from comprehensive list
+                reasons.append(f"LOLBAS binary detected: {process_name}")
+                lolbin_match = True
+                
+                # Additional weight if LOLBin executed with privileges
+                if has_privileges:
+                    score += 15
+                    reasons.append("LOLBin with elevated privileges")
+
+        # Fallback: Check hardcoded common LOLBins if lolbins_iocs.csv not loaded
+        if not lolbin_match:
+            common_lolbins = ['powershell.exe', 'cmd.exe', 'rundll32.exe', 'regsvr32.exe', 'mshta.exe', 'wscript.exe',
+                       'cscript.exe', 'certutil.exe', 'bitsadmin.exe', 'schtasks.exe', 'psexec', 'wmic.exe',
+                       'msiexec.exe', 'regasm.exe', 'regsvcs.exe', 'installutil.exe', 'msbuild.exe']
+            if any(x in process for x in common_lolbins):
+                score += 20
+                reasons.append("Suspicious LOLBin process")
+                
+                # Additional weight if executed with privileges
+                if has_privileges:
+                    score += 10
+                    reasons.append("LOLBin with elevated privileges")
+
+        # Check for unsigned/unknown binaries with privileges (suspicious paths)
+        if has_privileges and process and eid == 4688:  # Process creation
+            suspicious_paths = ['\\temp\\', '\\tmp\\', '\\appdata\\', '\\users\\public\\', 
+                              '\\programdata\\', '\\downloads\\', '\\desktop\\', '\\documents\\']
+            if any(path in process for path in suspicious_paths):
+                score += 25
+                reasons.append("Privileged execution from suspicious path")
+            
+            # Check for non-standard executable extensions or no extension
+            if process.endswith('.exe') and not any(std_path in process for std_path in ['\\windows\\', '\\program files']):
+                score += 15
+                reasons.append("Non-standard path privileged execution")
+        
+        # Office as parent (potential macro/phishing)
         if any(x in parent for x in ['outlook.exe', 'winword.exe', 'excel.exe', 'powerpnt.exe']):
             score += 10
             reasons.append("Office as parent")
@@ -1267,17 +1383,20 @@ class WindowsEventLogSearcher:
                                 ok = False
                                 break
                         except Exception:
-                            ok = False; break
+                            ok = False
+                            break
                     elif '|contains' in k_l:
                         field = k_l.split('|contains')[0]
                         val = (e.get(field) or '')
                         if v is None or str(v).lower() not in str(val).lower():
-                            ok = False; break
+                            ok = False
+                            break
                     else:
                         # equality on simple mapped fields
                         val = (e.get(k_l) or '')
                         if str(val).lower() != str(v).lower():
-                            ok = False; break
+                            ok = False
+                            break
                 if ok:
                     matches.append(rule.get('title')
                                    or rule.get('id') or 'sigma_rule')
@@ -1324,6 +1443,40 @@ class WindowsEventLogSearcher:
             m = re.search(r"Source Port:\s*(\d+)", description)
             if m:
                 fields['port'] = m.group(1)
+            
+            # Service Name (Event ID 4697, 7045, 7036, etc.)
+            m = re.search(r"Service Name:\s*(.+?)(?:\r?\n|$)", description)
+            if m:
+                fields['service_name'] = m.group(1).strip()
+            
+            # Service File Name / Service Path (Event ID 4697, 7045)
+            m = re.search(r"Service File Name:\s*(.+?)(?:\r?\n|$)", description)
+            if not m:
+                m = re.search(r"Image Path:\s*(.+?)(?:\r?\n|$)", description)
+            if m:
+                fields['service_path'] = m.group(1).strip()
+            
+            # Scheduled Task Name (Event ID 4698, 4699, 4700, 4701, 4702, 106, 140, 141, 200, 201)
+            m = re.search(r"Task Name:\s*(.+?)(?:\r?\n|$)", description)
+            if m:
+                fields['task_name'] = m.group(1).strip()
+            
+            # Scheduled Task Command/Action (Event ID 4698, 4699, 4700, 4701, 4702)
+            # Extract from XML-like content in task registration events
+            m = re.search(r"<Command>(.+?)</Command>", description, re.IGNORECASE)
+            if m:
+                fields['task_command'] = m.group(1).strip()
+            
+            # Alternative: Look for Action/Arguments in task description
+            m = re.search(r"<Actions.*?<Exec>.*?<Command>(.+?)</Command>", description, re.IGNORECASE | re.DOTALL)
+            if m and not fields.get('task_command'):
+                fields['task_command'] = m.group(1).strip()
+            
+            # Task Arguments
+            m = re.search(r"<Arguments>(.+?)</Arguments>", description, re.IGNORECASE)
+            if m:
+                fields['task_arguments'] = m.group(1).strip()
+                
         except Exception:
             pass
         return fields
@@ -1421,6 +1574,22 @@ class WindowsEventLogSearcher:
         except Exception:
             pass
 
+        return False
+
+    def _is_date_excluded(self, event_data):
+        """Return True if event's date matches any excluded dates."""
+        if not self.exclude_dates:
+            return False
+        
+        try:
+            timestamp = event_data.get('timestamp', '')
+            if timestamp:
+                # Extract date from timestamp (format: 'YYYY-MM-DD HH:MM:SS')
+                event_date = timestamp.split(' ')[0]
+                return event_date in self.exclude_dates
+        except Exception:
+            pass
+        
         return False
 
     def check_log_availability(self):
@@ -2078,7 +2247,8 @@ if ($successCount -gt 0) {{
             return False
 
 
-def search_threat_indicators(hours_back=24, output_format='text', specific_categories=None, level_filter=None, level_all=False, matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, all_events=False, explicit_event_ids=None):
+def search_threat_indicators(hours_back=24, output_format='text', specific_categories=None, level_filter=None, level_all=False, 
+                             matrix_format=False, log_filter=None, source_filter=None, description_filter=None, quiet=False, field_filters=None, bool_logic='and', negate=False, all_events=False, explicit_event_ids=None, specific_date=None, from_date=None, to_date=None):
     """
     Search for threat hunting Event IDs in Windows logs
 
@@ -2115,7 +2285,9 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
 
     # Load IOCs if provided
     iocs = {'ips': set(), 'domains': set(),
-                       'hashes': set(), 'substrings': set()}
+            'hashes': set(), 'substrings': set()}
+    lolbins_set = set()  # Separate set for LOLBins executables
+    
     try:
         if getattr(args, 'ioc', None):
             fmt = getattr(args, 'ioc_format', 'csv')
@@ -2134,6 +2306,16 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
                             iocs['domains'].add(val)
                         elif typ in ('hash', 'md5', 'sha1', 'sha256'):
                             iocs['hashes'].add(val)
+                        elif typ in ('lolbin', 'lolbins', 'lolbas'):
+                            # Extract just executable names for LOLBins
+                            # Handle both full paths and just names
+                            if '\\' in val or '/' in val:
+                                lolbin_name = val.split('\\')[-1].split('/')[-1]
+                            else:
+                                lolbin_name = val
+                            lolbins_set.add(lolbin_name)
+                            # Also add to substrings for description matching
+                            iocs['substrings'].add(val)
                         else:
                             iocs['substrings'].add(val)
             elif fmt == 'txt':
@@ -2177,9 +2359,33 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
                 f"Loaded IOCs: ips={len(iocs['ips'])}, domains={len(iocs['domains'])}, hashes={len(iocs['hashes'])}, subs={len(iocs['substrings'])}")
     except Exception as e:
         print(f"Warning: failed to load IOCs: {e}")
+    
+    # Auto-load lolbins_iocs.csv if it exists (for enhanced scoring and detection)
+    lolbins_csv_path = os.path.join('ioc', 'lolbins_iocs.csv')
+    if os.path.exists(lolbins_csv_path) and not getattr(args, 'ioc', None):
+        try:
+            import csv
+            with open(lolbins_csv_path, 'r', encoding='utf-8', errors='ignore') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    typ = (row.get('type') or '').strip().lower()
+                    val = (row.get('value') or '').strip().lower()
+                    if typ in ('lolbin', 'lolbins', 'lolbas', 'substring') and val:
+                        # Extract executable name
+                        if '\\' in val or '/' in val:
+                            lolbin_name = val.split('\\')[-1].split('/')[-1]
+                        else:
+                            lolbin_name = val
+                        if lolbin_name.endswith('.exe'):
+                            lolbins_set.add(lolbin_name)
+            if lolbins_set:
+                print(f"Auto-loaded {len(lolbins_set)} LOLBins from {lolbins_csv_path}")
+        except Exception as e:
+            pass  # Silently fail if auto-load doesn't work
 
     searcher = WindowsEventLogSearcher(sigma_rules=sigma_rules, sigma_boost=getattr(
-        args, 'sigma_boost', 10), iocs=iocs, ioc_boost=getattr(args, 'ioc_boost', 5))
+        args, 'sigma_boost', 10), iocs=iocs, ioc_boost=getattr(args, 'ioc_boost', 5),
+        exclude_dates=getattr(args, 'exclude_dates', None), lolbins_set=lolbins_set)
 
     if all_events:
         event_ids = []
@@ -2243,7 +2449,10 @@ def search_threat_indicators(hours_back=24, output_format='text', specific_categ
         concurrency=conc,
         progress=prog,
         allowlist=allowlist_obj,
-        suppress_rules=getattr(args, 'suppress', None)
+        suppress_rules=getattr(args, 'suppress', None),
+        specific_date=specific_date,
+        from_date=getattr(args, 'from_date', None),
+        to_date=getattr(args, 'to_date', None)
     )
     return searcher.results
 
@@ -2300,7 +2509,7 @@ def output_timeline(events, fmt='jsonl', sessionize='none'):
             print(json.dumps(e, default=str))
     else:  # csv
         headers = ['timestamp', 'session', 'user', 'computer', 'log_name',
-            'event_id', 'level', 'source', 'category', 'description']
+                   'event_id', 'level', 'source', 'process', 'category', 'description']
         print(','.join(headers))
         for e in sorted_events:
             row = []
@@ -2311,12 +2520,921 @@ def output_timeline(events, fmt='jsonl', sessionize='none'):
             print(','.join(row))
 
 
+def load_compromise_config():
+    """Load compromise.json configuration file."""
+    try:
+        config_path = os.path.join('config', 'compromise.json')
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        return config
+    except FileNotFoundError:
+        print(f"Error: compromise.json not found at {config_path}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in compromise.json: {e}")
+        return None
+
+
+def load_additional_config_events():
+    """Load event IDs from other relevant config files."""
+    additional_events = []
+    relevant_configs = [
+        'privilege_escalation.json',
+        'persistence_autoruns.json', 
+        'powershell_deep.json',
+        'rdp_remote_access.json',
+        'simple_privilege.json',
+        'sysmon_core.json',
+        'kerberos_anomalies.json',
+        'network_wfp_anomalies.json'
+    ]
+    
+    for config_file in relevant_configs:
+        try:
+            config_path = os.path.join('config', config_file)
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                # Extract event IDs from the config
+                for key, value in config.items():
+                    if isinstance(value, list):
+                        # Filter for integer event IDs
+                        event_ids = [e for e in value if isinstance(e, int)]
+                        additional_events.extend(event_ids)
+                    elif isinstance(value, dict):
+                        # Handle nested structures
+                        for sub_key, sub_value in value.items():
+                            if isinstance(sub_value, list):
+                                event_ids = [e for e in sub_value if isinstance(e, int)]
+                                additional_events.extend(event_ids)
+                
+                print(f"  - Loaded {config_file}")
+        except Exception as e:
+            print(f"  - Warning: Could not load {config_file}: {e}")
+    
+    return additional_events
+
+
+def hunt_compromise_indicators(hours_back=24, specific_date=None, from_date=None, to_date=None):
+    """Hunt for compromise indicators using compromise.json configuration."""
+    config = load_compromise_config()
+    if not config:
+        return None, 0
+    
+    print("=" * 80)
+    print("COMPROMISE INDICATOR HUNTING")
+    print("=" * 80)
+    
+    # Show what we're loading from compromise.json
+    print(f"\nLoading from compromise.json:")
+    for key in config.keys():
+        if isinstance(config[key], list):
+            if all(isinstance(x, int) for x in config[key]):
+                print(f"  - {key}: {len(config[key])} event IDs")
+            else:
+                print(f"  - {key}: {len(config[key])} entries")
+        elif isinstance(config[key], dict):
+            print(f"  - {key}: {len(config[key])} mappings")
+    
+    # Initialize searcher
+    exclude_dates = getattr(args, 'exclude_dates', None) if 'args' in globals() else None
+    searcher = WindowsEventLogSearcher(exclude_dates=exclude_dates)
+    
+    # Get all event IDs from compromise.json
+    all_compromise_events = []
+    try:
+        for category, events in config.items():
+            if isinstance(events, list):
+                # Filter out non-integer values
+                valid_events = [e for e in events if isinstance(e, int)]
+                all_compromise_events.extend(valid_events)
+            elif category == 'correlate_event_chains' and isinstance(events, list):
+                # Extract event IDs from correlation chains
+                for chain in events:
+                    if isinstance(chain, dict) and 'steps' in chain:
+                        for step in chain.get('steps', []):
+                            if isinstance(step, dict) and 'event_id' in step:
+                                all_compromise_events.append(step['event_id'])
+            elif category == 'hunt_queries' and isinstance(events, list):
+                # Extract event IDs from hunt queries
+                for query in events:
+                    if isinstance(query, dict) and 'event_ids' in query:
+                        all_compromise_events.extend(query['event_ids'])
+    except Exception as e:
+        print(f"Error processing config: {e}")
+        return None, 0
+    
+    # Ask user if they want to include other relevant config files
+    print(f"\nCurrent search includes {len(all_compromise_events)} event IDs from compromise.json")
+    print("Would you like to include additional event IDs from other relevant config files?")
+    print("Available configs: privilege_escalation.json, persistence_autoruns.json, powershell_deep.json, etc.")
+    
+    while True:
+        user_input = input("Include other config files? [Y/N] (default: N): ").strip().upper()
+        if user_input in ['Y', 'YES']:
+            include_other_configs = True
+            break
+        elif user_input in ['N', 'NO', '']:  # Empty string for default
+            include_other_configs = False
+            break
+        else:
+            print("Please enter Y/YES or N/NO (or press Enter for default N)")
+    
+    # If user chose to include other configs, load them
+    if include_other_configs:
+        additional_events = load_additional_config_events()
+        if additional_events:
+            all_compromise_events.extend(additional_events)
+            print(f"Added {len(additional_events)} additional event IDs from other config files")
+    
+    # Remove duplicates and sort
+    unique_events = sorted(list(set(all_compromise_events)))
+    
+    print(f"Searching for {len(unique_events)} compromise-related event IDs...")
+    
+    # Search for events using the existing method
+    try:
+        # Store results in searcher object
+        searcher.search_event_ids(
+            event_ids=unique_events,
+            hours_back=hours_back,
+            output_format='json',
+            quiet=True,
+            specific_date=specific_date,
+            from_date=from_date,
+            to_date=to_date
+        )
+        # Get results from searcher object
+        results = getattr(searcher, 'results', [])
+    except Exception as e:
+        print(f"Error searching for events: {e}")
+        results = []
+    
+    return results, config
+
+
+def analyze_event_chains(results, config):
+    """Analyze event chains to detect attack patterns.
+    Enhanced to consider LOLBins execution in chains."""
+    if 'correlate_event_chains' not in config:
+        return []
+    
+    detected_chains = []
+    chains = config['correlate_event_chains']
+    
+    # Group events by session/user for correlation
+    events_by_session = {}
+    for event in results:
+        session_id = event.get('session', 'unknown')
+        if session_id not in events_by_session:
+            events_by_session[session_id] = []
+        events_by_session[session_id].append(event)
+    
+    # Check each correlation chain
+    for chain in chains:
+        chain_name = chain.get('name', 'Unknown Chain')
+        steps = chain.get('steps', [])
+        
+        for session_id, session_events in events_by_session.items():
+            # Check if this session has events matching the chain
+            matched_steps = []
+            lolbin_detected = False
+            privileged_execution = False
+            
+            for step in steps:
+                step_event_id = step.get('event_id')
+                step_source = step.get('source', 'Security')
+                
+                # Find matching events in this session
+                for event in session_events:
+                    if (event.get('event_id') == step_event_id and 
+                        event.get('log_name', '').lower() == step_source.lower()):
+                        matched_steps.append({
+                            'step': step,
+                            'event': event,
+                            'timestamp': event.get('timestamp')
+                        })
+                        
+                        # Check if this step involves LOLBin execution
+                        if event.get('risk_reasons'):
+                            for reason in event.get('risk_reasons', []):
+                                if 'lolb' in reason.lower():
+                                    lolbin_detected = True
+                                if 'privilege' in reason.lower():
+                                    privileged_execution = True
+                        
+                        break
+            
+            # If we found multiple steps, this might be a chain
+            if len(matched_steps) >= 2:
+                base_confidence = len(matched_steps) / len(steps)
+                
+                # Increase confidence if LOLBin was detected in the chain
+                if lolbin_detected:
+                    base_confidence = min(base_confidence + 0.15, 1.0)  # +15% for LOLBin
+                
+                # Further increase if LOLBin was executed with privileges
+                if lolbin_detected and privileged_execution:
+                    base_confidence = min(base_confidence + 0.1, 1.0)  # Additional +10%
+                
+                detected_chains.append({
+                    'chain_name': chain_name,
+                    'session_id': session_id,
+                    'matched_steps': matched_steps,
+                    'confidence': base_confidence,
+                    'lolbin_detected': lolbin_detected,
+                    'privileged_execution': privileged_execution
+                })
+    
+    return detected_chains
+
+
+def calculate_compromise_likelihood(results, detected_chains, config):
+    """Calculate the likelihood percentage that the host is compromised using advanced scoring methodology,
+    with safeguards to reduce false positives (deduping, caps, temporal coherence, chain requirement)."""
+    if not results:
+        return 0.0
+
+    # Load LOLBins for context-aware scoring
+    lolbins = load_lolbins_list()
+    
+    # Event severity scoring (base scores)
+    event_severity_scores = {
+        # CRITICAL (20-25 points) - Immediate compromise indicators
+        1102: 25,  # Log cleared (defense evasion)
+        1100: 20,  # Event log service stopped
+        1104: 20,  # Security log cleared
+        4732: 22,  # Member added to local group (privilege escalation)
+        4728: 20,  # Member added to global group
+        
+        # HIGH (12-18 points) - Strong compromise indicators
+        4697: 18,  # Service installed (persistence)
+        4720: 15,  # User account created
+        4648: 15,  # Logon with explicit credentials
+        4771: 15,  # Kerberos pre-authentication failed
+        4104: 14,  # PowerShell script block logging
+        4698: 12,  # Scheduled task created (persistence)
+        4722: 12,  # User account enabled
+        4735: 12,  # Group changed
+        
+        # MEDIUM (6-10 points) - Moderate compromise indicators
+        4625: 8,   # Failed logon (brute force)
+        4768: 8,   # Kerberos TGT requested
+        4769: 8,   # Kerberos service ticket requested
+        7045: 7,   # Service creation
+        8004: 6,   # PowerShell execution policy
+        8005: 6,   # PowerShell execution policy
+        
+        # LOW (2-5 points) - Baseline events
+        4688: 2,   # Process creation (baseline)
+        1022: 1,   # DNS query (very common, low severity)
+    }
+    
+    # Context-aware scoring multipliers
+    def get_context_multiplier(event):
+        """Calculate context-based multiplier for event scoring."""
+        multiplier = 1.0
+        process_name = (event.get('process') or '').lower()
+        service_name = (event.get('service_name') or '').lower()
+        service_path = (event.get('service_path') or '').lower()
+        task_command = (event.get('task_command') or '').lower()
+        description = (event.get('description') or '').lower()
+        
+        # LOLBin execution multiplier
+        if any(lolbin in process_name or lolbin in service_path or lolbin in task_command 
+               for lolbin in lolbins):
+            multiplier *= 3.0  # 3x multiplier for LOLBin execution
+        
+        # Privileged execution multiplier
+        if any(priv_indicator in description for priv_indicator in 
+               ['administrator', 'system', 'privilege', 'elevated', 'runas']):
+            multiplier *= 2.0  # 2x multiplier for privileged execution
+        
+        # Suspicious process names
+        suspicious_processes = ['cmd.exe', 'powershell.exe', 'wscript.exe', 'cscript.exe', 
+                               'regsvr32.exe', 'rundll32.exe', 'mshta.exe', 'certutil.exe']
+        if any(susp in process_name for susp in suspicious_processes):
+            multiplier *= 1.5  # 1.5x multiplier for suspicious processes
+        
+        # Service persistence indicators
+        if service_name and any(persist_indicator in service_name.lower() for persist_indicator in 
+                               ['backdoor', 'shell', 'reverse', 'bind', 'listener']):
+            multiplier *= 2.5  # 2.5x multiplier for suspicious service names
+        
+        # Scheduled task persistence
+        if task_command and any(task_indicator in task_command.lower() for task_indicator in 
+                               ['powershell', 'cmd', 'wscript', 'cscript', 'regsvr32']):
+            multiplier *= 1.8  # 1.8x multiplier for suspicious task commands
+        
+        # Reduce impact of DNS queries (very common, not necessarily suspicious)
+        if event.get('event_id') == 1022:
+            multiplier *= 0.1  # 0.1x multiplier for DNS queries (significantly reduce their impact)
+        
+        return multiplier
+    
+    # Temporal scoring (recent events weighted higher)
+    def get_temporal_multiplier(event):
+        """Calculate temporal multiplier based on event recency."""
+        try:
+            from datetime import datetime, timedelta
+            event_time = datetime.strptime(event.get('timestamp', ''), '%Y-%m-%d %H:%M:%S')
+            hours_ago = (datetime.now() - event_time).total_seconds() / 3600
+            
+            if hours_ago <= 1:      # Last hour
+                return 2.0
+            elif hours_ago <= 6:     # Last 6 hours
+                return 1.5
+            elif hours_ago <= 24:    # Last 24 hours
+                return 1.2
+            elif hours_ago <= 72:    # Last 3 days
+                return 1.0
+            else:                   # Older
+                return 0.8
+        except:
+            return 1.0  # Default if timestamp parsing fails
+    
+    # Build a filtered, de-duplicated list for scoring (same eid/computer/desc per-day)
+    unique_keys = set()
+    dedup_results = []
+    for _ev in results:
+        ts = (_ev.get('timestamp') or '')
+        ev_date = ts.split(' ')[0] if ts else ''
+        key = (
+            ev_date,
+            _ev.get('event_id'),
+            (_ev.get('computer') or ''),
+            hash(_ev.get('description') or '')
+        )
+        if key in unique_keys:
+            continue
+        unique_keys.add(key)
+        dedup_results.append(_ev)
+
+    # Strict high-confidence subset (exclude noisy IDs)
+    strict_high_conf_ids = set([1102, 1100, 1104, 4697, 4698, 7045, 4720, 4728, 4732])
+    configured_high_conf = set(config.get('prioritize_high_confidence_indicators', []))
+    high_confidence_events = list(configured_high_conf.intersection(strict_high_conf_ids))
+
+    # Calculate base scores with context and temporal multipliers
+    total_score = 0
+    high_confidence_count = 0
+    dns_query_score = 0  # Track DNS query scores separately
+    # Cap cumulative contribution by Event ID to avoid noisy overwhelming
+    per_eid_score = {}
+    per_eid_cap = 50.0
+
+    for event in dedup_results:
+        event_id = event.get('event_id')
+        base_score = event_severity_scores.get(event_id, 1)  # Default 1 for unknown events
+        
+        # Apply context multiplier
+        context_multiplier = get_context_multiplier(event)
+        
+        # Apply temporal multiplier
+        temporal_multiplier = get_temporal_multiplier(event)
+        
+        # Calculate final score for this event
+        event_score = base_score * context_multiplier * temporal_multiplier
+
+        # Cap DNS query contributions to prevent overwhelming the score
+        if event_id == 1022:
+            dns_query_score += event_score
+            # Cap total DNS query score at 10 points
+            if dns_query_score > 10:
+                continue  # Skip this DNS query beyond cap
+        else:
+            # Apply per-EventID cumulative cap
+            current = per_eid_score.get(event_id, 0.0)
+            if current < per_eid_cap:
+                remaining = per_eid_cap - current
+                to_add = event_score if event_score <= remaining else remaining
+                if to_add > 0:
+                    total_score += to_add
+                    per_eid_score[event_id] = current + to_add
+        
+        # Count high confidence events
+        if event_id in high_confidence_events:
+            high_confidence_count += 1
+    
+    # Add capped DNS query score
+    total_score += min(dns_query_score, 10)
+    
+    # Event chain scoring (enhanced)
+    chain_score = 0
+    for chain in detected_chains:
+        base_chain_score = chain['confidence'] * 30  # Base chain score
+        
+        # Bonus for LOLBin in chain
+        if chain.get('lolbin_detected'):
+            base_chain_score *= 1.5
+        
+        # Bonus for privileged execution in chain
+        if chain.get('privileged_execution'):
+            base_chain_score *= 1.3
+        
+        chain_score += base_chain_score
+    
+    # Hunt query match bonuses (conservative)
+    hunt_query_bonus = 0
+    for event in dedup_results:
+        if event.get('risk_reasons'):
+            for reason in event.get('risk_reasons', []):
+                if 'hunt' in reason.lower() or 'query' in reason.lower():
+                    hunt_query_bonus += 2  # reduce per-match weight to limit noise
+    
+    # High confidence indicator bonus (strict set only)
+    high_confidence_bonus = high_confidence_count * 6
+
+    # Temporal coherence factor: favor clusters within shorter windows
+    from datetime import datetime
+    times = []
+    for ev in dedup_results:
+        ts = ev.get('timestamp')
+        if ts:
+            try:
+                times.append(datetime.strptime(ts, '%Y-%m-%d %H:%M:%S'))
+            except Exception:
+                pass
+    temporal_factor = 1.0
+    if times:
+        earliest = min(times)
+        latest = max(times)
+        span_hours = max(0.0, (latest - earliest).total_seconds() / 3600.0)
+        if span_hours <= 6:
+            temporal_factor = 1.3
+        elif span_hours <= 24:
+            temporal_factor = 1.1
+        else:
+            temporal_factor = 0.85
+    
+    # Calculate final likelihood (apply temporal coherence)
+    final_score = (total_score + chain_score + hunt_query_bonus + high_confidence_bonus) * temporal_factor
+    
+    # More sophisticated normalization
+    # Scale based on event count and severity distribution
+    event_count = len(dedup_results)
+    if event_count == 0:
+        return 0.0
+    
+    # Base normalization: score per event
+    base_likelihood = (final_score / event_count) * 10  # Scale factor
+    
+    # Apply logarithmic scaling to prevent always hitting 100%
+    import math
+    if base_likelihood > 0:
+        likelihood = min(100.0, 100 * (1 - math.exp(-base_likelihood / 50)))
+    else:
+        likelihood = 0.0
+    
+    # Ensure minimum threshold for high confidence events (reduced)
+    if high_confidence_count > 0:
+        likelihood = max(likelihood, 20.0)
+
+    # If no chains detected, cap likelihood to avoid false positives
+    if not detected_chains:
+        likelihood = min(likelihood, 60.0)
+    
+    # Cap at 100%
+    likelihood = min(100.0, likelihood)
+    
+    return likelihood
+
+
+def print_scoring_breakdown(results, detected_chains, config, likelihood):
+    """Print detailed scoring breakdown for debugging and transparency."""
+    if not results:
+        return
+    
+    print(f"\nSCORING BREAKDOWN:")
+    print("=" * 50)
+    
+    # Load LOLBins for context
+    lolbins = load_lolbins_list()
+    
+    # Event severity scores (same as in calculate_compromise_likelihood)
+    event_severity_scores = {
+        1102: 25, 1100: 20, 1104: 20, 4732: 22, 4728: 20,
+        4697: 18, 4720: 15, 4648: 15, 4771: 15, 4104: 14,
+        4698: 12, 4722: 12, 4735: 12, 4625: 8, 4768: 8,
+        4769: 8, 7045: 7, 8004: 6, 8005: 6, 4688: 2
+    }
+    
+    # Count events by severity
+    critical_count = sum(1 for e in results if event_severity_scores.get(e.get('event_id', 0), 0) >= 20)
+    high_count = sum(1 for e in results if 12 <= event_severity_scores.get(e.get('event_id', 0), 0) < 20)
+    medium_count = sum(1 for e in results if 6 <= event_severity_scores.get(e.get('event_id', 0), 0) < 12)
+    low_count = sum(1 for e in results if event_severity_scores.get(e.get('event_id', 0), 0) < 6)
+    
+    print(f"Event Severity Distribution:")
+    print(f"  Critical (20+ pts): {critical_count} events")
+    print(f"  High (12-19 pts): {high_count} events") 
+    print(f"  Medium (6-11 pts): {medium_count} events")
+    print(f"  Low (2-5 pts): {low_count} events")
+    
+    # Context analysis
+    lolbin_events = 0
+    privileged_events = 0
+    suspicious_process_events = 0
+    
+    for event in results:
+        process_name = (event.get('process') or '').lower()
+        service_path = (event.get('service_path') or '').lower()
+        task_command = (event.get('task_command') or '').lower()
+        description = (event.get('description') or '').lower()
+        
+        if any(lolbin in process_name or lolbin in service_path or lolbin in task_command for lolbin in lolbins):
+            lolbin_events += 1
+        
+        if any(priv in description for priv in ['administrator', 'system', 'privilege', 'elevated', 'runas']):
+            privileged_events += 1
+        
+        if any(susp in process_name for susp in ['cmd.exe', 'powershell.exe', 'wscript.exe', 'cscript.exe']):
+            suspicious_process_events += 1
+    
+    print(f"\nContext Analysis:")
+    print(f"  LOLBin executions: {lolbin_events}")
+    print(f"  Privileged executions: {privileged_events}")
+    print(f"  Suspicious processes: {suspicious_process_events}")
+    
+    # Chain analysis
+    if detected_chains:
+        print(f"\nAttack Chains: {len(detected_chains)} detected")
+        for i, chain in enumerate(detected_chains, 1):
+            print(f"  Chain {i}: {chain['chain_name']} (confidence: {chain['confidence']:.1%})")
+            if chain.get('lolbin_detected'):
+                print(f"    - Contains LOLBin execution")
+            if chain.get('privileged_execution'):
+                print(f"    - Contains privileged execution")
+    
+    print(f"\nFinal Likelihood: {likelihood:.1f}%")
+    print("=" * 50)
+
+
+def load_lolbins_list():
+    """Load LOLBins list from CSV file for context-aware scoring."""
+    lolbins = []
+    try:
+        with open('ioc/lolbins_iocs.csv', 'r', encoding='utf-8') as f:
+            import csv
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get('value'):
+                    # Extract just the executable name
+                    lolbin_name = row['value'].split('\\')[-1].split('/')[-1].lower()
+                    if lolbin_name not in lolbins:
+                        lolbins.append(lolbin_name)
+    except Exception as e:
+        print(f"Warning: Could not load LOLBins list: {e}")
+    
+    return lolbins
+
+
+def analyze_hunt_queries(results, config):
+    """Analyze results against hunt queries from compromise.json."""
+    if 'hunt_queries' not in config:
+        return []
+    
+    matched_queries = []
+    hunt_queries = config['hunt_queries']
+    
+    for query in hunt_queries:
+        query_name = query.get('name', 'Unknown Query')
+        query_event_ids = query.get('event_ids', [])
+        
+        # Find events matching this hunt query
+        matching_events = []
+        for e in results:
+            if e.get('event_id') in query_event_ids:
+                # For DNS queries (1022), only match if they're related to suspicious processes
+                if e.get('event_id') == 1022:
+                    process_name = (e.get('process') or '').lower()
+                    description = (e.get('description') or '').lower()
+                    # Only match DNS queries from suspicious processes or with suspicious domains
+                    if any(susp in process_name for susp in ['powershell', 'cmd', 'wscript', 'cscript']) or \
+                       any(susp in description for susp in ['suspicious', 'malware', 'c2', 'command']):
+                        matching_events.append(e)
+                else:
+                    # For other events, match normally
+                    matching_events.append(e)
+        
+        if matching_events:
+            matched_queries.append({
+                'name': query_name,
+                'event_ids': query_event_ids,
+                'matched_count': len(matching_events),
+                'events': matching_events[:5]  # Keep first 5 for display
+            })
+    
+    return matched_queries
+
+
+def print_compromise_analysis(results, detected_chains, likelihood, config, export_events=False, output_file=None):
+    """Print detailed compromise analysis (scoped strictly to selected date/hour window)."""
+    print(f"\nCOMPROMISE ANALYSIS RESULTS")
+    print("=" * 80)
+
+    # Determine selected dates (specific date or date range) to scope all summaries
+    target_dates = None
+    if 'args' in globals():
+        try:
+            specific_date = getattr(args, 'specific_date', None)
+            from_date = getattr(args, 'from_date', None)
+            to_date = getattr(args, 'to_date', None)
+            if specific_date:
+                target_dates = {specific_date}
+            elif from_date and to_date:
+                from datetime import datetime, timedelta
+                start_date = datetime.strptime(from_date, '%Y-%m-%d').date()
+                end_date = datetime.strptime(to_date, '%Y-%m-%d').date()
+                if start_date <= end_date:
+                    target_dates = set()
+                    d = start_date
+                    while d <= end_date:
+                        target_dates.add(d.strftime('%Y-%m-%d'))
+                        d += timedelta(days=1)
+        except Exception:
+            target_dates = None
+
+    # Filter results to target_dates if provided
+    def _within_scope(ev):
+        if not target_dates:
+            return True
+        ts = ev.get('timestamp', '') or ''
+        ev_date = ts.split(' ')[0] if ts else ''
+        return ev_date in target_dates
+
+    scoped_results = [e for e in results if _within_scope(e)]
+
+    # Filter detected chains to scope (all matched steps must be within range)
+    scoped_chains = []
+    for chain in detected_chains or []:
+        steps = chain.get('matched_steps', [])
+        if not target_dates:
+            scoped_chains.append(chain)
+        else:
+            ok = True
+            for s in steps:
+                ts = (s.get('timestamp') or '')
+                d = ts.split(' ')[0] if ts else ''
+                if d not in target_dates:
+                    ok = False
+                    break
+            if ok:
+                scoped_chains.append(chain)
+
+    # Analyze hunt query matches using scoped results
+    matched_queries = analyze_hunt_queries(scoped_results, config)
+    
+    # Collect high-confidence indicators
+    high_confidence_events = []
+    if 'prioritize_high_confidence_indicators' in config:
+        high_conf_ids = config['prioritize_high_confidence_indicators']
+        high_confidence_events = [e for e in scoped_results if e.get('event_id') in high_conf_ids]
+    
+    # Collect high-risk events
+    high_risk_events = [e for e in scoped_results if e.get('event_id') in [1102, 1100, 1104, 4720, 4728, 4732, 4697]]
+    
+    # ===== CONSOLE OUTPUT: SUMMARIES ONLY =====
+    
+    # Print summary of detected chains
+    if scoped_chains:
+        print(f"\nDETECTED ATTACK CHAINS ({len(scoped_chains)} found):")
+        for i, chain in enumerate(scoped_chains, 1):
+            total_steps = len(chain['matched_steps'])
+            indicators = []
+            if chain.get('lolbin_detected'):
+                indicators.append("LOLBin")
+            if chain.get('privileged_execution'):
+                indicators.append("Privileged")
+            indicator_str = f" [{', '.join(indicators)}]" if indicators else ""
+            print(f"  {i}. {chain['chain_name']} (Confidence: {chain['confidence']:.1%}, {total_steps} steps){indicator_str}")
+    
+    # Print summary of hunt query matches
+    if matched_queries:
+        print(f"\nHUNT QUERY MATCHES ({len(matched_queries)} queries matched):")
+        for query in matched_queries:
+            print(f"  - {query['name']}: {query['matched_count']} event(s)")
+    
+    # Print summary of high-confidence events
+    if high_confidence_events:
+        print(f"\nHIGH-CONFIDENCE INDICATORS ({len(high_confidence_events)} found):")
+        # Group by event ID and show counts
+        event_id_counts = {}
+        for event in high_confidence_events:
+            eid = event.get('event_id')
+            event_id_counts[eid] = event_id_counts.get(eid, 0) + 1
+        for eid, count in sorted(event_id_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+            print(f"  - Event ID {eid}: {count} occurrence(s)")
+        if len(event_id_counts) > 10:
+            print(f"  ... and {len(event_id_counts) - 10} more event types")
+    
+    # Print summary of high-risk events
+    if high_risk_events:
+        print(f"\nCRITICAL HIGH-RISK EVENTS ({len(high_risk_events)} found):")
+        # Group by event ID and show counts
+        event_id_counts = {}
+        for event in high_risk_events:
+            eid = event.get('event_id')
+            event_id_counts[eid] = event_id_counts.get(eid, 0) + 1
+        for eid, count in sorted(event_id_counts.items(), key=lambda x: x[1], reverse=True):
+            print(f"  - Event ID {eid}: {count} occurrence(s)")
+    
+    # Show category breakdown
+    if scoped_results:
+        print(f"\nEVENT CATEGORY BREAKDOWN:")
+        categories = {}
+        for category, event_ids in config.items():
+            if isinstance(event_ids, list) and all(isinstance(x, int) for x in event_ids):
+                matched = [e for e in scoped_results if e.get('event_id') in event_ids]
+                if matched:
+                    categories[category] = len(matched)
+        
+        for category, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+            print(f"   - {category}: {count} event(s)")
+    
+    # ===== FILE EXPORT: DETAILED EVENT LISTS WITH MARKERS =====
+    if export_events and output_file:
+        try:
+            # Create sets for quick lookups
+            high_conf_ids = set()
+            if 'prioritize_high_confidence_indicators' in config:
+                high_conf_ids = set(config['prioritize_high_confidence_indicators'])
+            
+            high_risk_ids = set([1102, 1100, 1104, 4720, 4728, 4732, 4697])
+            
+            # Create sets of event IDs involved in chains and queries
+            chain_event_ids = set()
+            for chain in scoped_chains:
+                for step in chain['matched_steps']:
+                    if 'event' in step:
+                        # Store the actual event object for matching
+                        chain_event_ids.add(id(step['event']))
+            
+            query_event_ids = set()
+            for query in matched_queries:
+                for event in query['events']:
+                    query_event_ids.add(id(event))
+
+            # Strict date-filter and de-duplicate results for export safety
+            target_dates = None
+            if 'args' in globals():
+                try:
+                    specific_date = getattr(args, 'specific_date', None)
+                    from_date = getattr(args, 'from_date', None)
+                    to_date = getattr(args, 'to_date', None)
+                    if specific_date:
+                        target_dates = {specific_date}
+                    elif from_date and to_date:
+                        from datetime import datetime, timedelta
+                        start_date = datetime.strptime(from_date, '%Y-%m-%d').date()
+                        end_date = datetime.strptime(to_date, '%Y-%m-%d').date()
+                        if start_date <= end_date:
+                            target_dates = set()
+                            d = start_date
+                            while d <= end_date:
+                                target_dates.add(d.strftime('%Y-%m-%d'))
+                                d += timedelta(days=1)
+                except Exception:
+                    target_dates = None
+
+            unique_keys = set()
+            filtered_results = []
+            for ev in results:
+                ts = ev.get('timestamp', '') or ''
+                ev_date = ts.split(' ')[0] if ts else ''
+                if target_dates and ev_date not in target_dates:
+                    continue
+                # Build a stable uniqueness key
+                key = (
+                    ev_date,
+                    ev.get('event_id'),
+                    (ev.get('log_name') or ''),
+                    (ev.get('computer') or ''),
+                    hash(ev.get('description') or '')
+                )
+                if key in unique_keys:
+                    continue
+                unique_keys.add(key)
+                filtered_results.append(ev)
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                # Count high-confidence events (post-filter)
+                high_conf_count = sum(1 for e in filtered_results if e.get('event_id') in high_conf_ids)
+                
+                # Export all discovered events with markers
+                if filtered_results:
+                    f.write(f"\n\nALL DISCOVERED EVENTS ({len(filtered_results)} total):\n")
+                    f.write("=" * 80 + "\n")
+                    f.write(f"Markers:\n")
+                    f.write(f"  [HIGH-CONFIDENCE] = High-confidence compromise indicator\n")
+                    f.write(f"  [HIGH-RISK] = Critical high-risk event\n")
+                    f.write(f"  [ATTACK-CHAIN] = Part of detected attack chain\n")
+                    f.write(f"  [HUNT-QUERY] = Matched hunt query\n")
+                    f.write("=" * 80 + "\n\n")
+                    
+                    for event in filtered_results:
+                        timestamp = event.get('timestamp', 'Unknown')
+                        event_id = event.get('event_id', 'Unknown')
+                        log_name = event.get('log_name', 'Unknown')
+                        source = event.get('source', 'Unknown')
+                        user = event.get('user', 'Unknown')
+                        computer = event.get('computer', 'Unknown')
+                        process = event.get('process') or ''
+                        description = event.get('description', 'N/A')
+                        
+                        # Extract service and task information
+                        service_name = event.get('service_name') or ''
+                        service_path = event.get('service_path') or ''
+                        task_name = event.get('task_name') or ''
+                        task_command = event.get('task_command') or ''
+                        task_arguments = event.get('task_arguments') or ''
+                        
+                        # Build markers
+                        markers = []
+                        if event_id in high_conf_ids:
+                            markers.append("HIGH-CONFIDENCE")
+                        if event_id in high_risk_ids:
+                            markers.append("HIGH-RISK")
+                        if id(event) in chain_event_ids:
+                            markers.append("ATTACK-CHAIN")
+                        if id(event) in query_event_ids:
+                            markers.append("HUNT-QUERY")
+                        
+                        marker_str = " [" + "] [".join(markers) + "]" if markers else ""
+                        
+                        f.write(f"[{timestamp}] {log_name} Event {event_id}{marker_str}\n")
+                        f.write(f"  Computer: {computer}\n")
+                        f.write(f"  User: {user}\n")
+                        f.write(f"  Process: {process}\n")
+                        f.write(f"  Source: {source}\n")
+                        
+                        # Add service information for service-related events
+                        if service_name:
+                            f.write(f"  Service Name: {service_name}\n")
+                        if service_path:
+                            f.write(f"  Service Path: {service_path}\n")
+                        
+                        # Add task information for scheduled task events
+                        if task_name:
+                            f.write(f"  Task Name: {task_name}\n")
+                        if task_command:
+                            full_command = task_command
+                            if task_arguments:
+                                full_command += f" {task_arguments}"
+                            f.write(f"  Task Command: {full_command}\n")
+                        
+                        f.write(f"  Description: {description}\n")
+                        f.write("-" * 80 + "\n")
+            
+            # Update export summary message
+            export_msg = f"{len(results)} event(s)"
+            if high_conf_count > 0:
+                export_msg += f" ({high_conf_count} high-confidence)"
+            if len(detected_chains) > 0:
+                export_msg += f", {len(detected_chains)} attack chain(s)"
+            if len(matched_queries) > 0:
+                export_msg += f", {len(matched_queries)} hunt query match(es)"
+            if len(high_risk_events) > 0:
+                export_msg += f", {len(high_risk_events)} high-risk"
+            print(f"\n[INFO] Exported {export_msg} to: {output_file}")
+        except Exception as e:
+            print(f"\n[ERROR] Failed to export events to file: {e}")
+    elif export_events and not output_file:
+        print(f"\n[WARNING] --export-events requires -o output file to be specified")
+    
+    print("\n" + "=" * 80)
+    print(f"COMPROMISE ANALYSIS RESULTS SUMMARY")
+    print("=" * 80)
+    print(f"Total Events Found: {len(results)}")
+    print(f"Event Chains Detected: {len(detected_chains)}")
+    print(f"Compromise Likelihood: {likelihood:.1f}%")
+    
+    if likelihood >= 80:
+        print(f"\n[!] HIGH RISK: {likelihood:.1f}% - Strong indicators of compromise detected!")
+    elif likelihood >= 50:
+        print(f"\n[!] MEDIUM RISK: {likelihood:.1f}% - Some indicators of compromise detected")
+    elif likelihood >= 20:
+        print(f"\n[!] LOW RISK: {likelihood:.1f}% - Few indicators detected")
+    else:
+        print(f"\n[OK] LOW RISK: {likelihood:.1f}% - No significant indicators detected")
+    
+    print("\n" + "-" * 80)
+    print("DISCLAIMER:")
+    print("The compromise likelihood percentage is indicative only and should not be")
+    print("taken as definitive proof of compromise. This is a probabilistic assessment")
+    print("based on detected indicators and patterns. Always conduct thorough manual")
+    print("investigation and analysis before drawing conclusions.")
+    print("-" * 80)
+    print("\n" + "=" * 80)
+
+
 def show_logisek_banner():
     """Display the LOGISEK banner with ASCII art and information."""
     print("")
-    
-    # LOGISEK ASCII Art
-    ascii_art = """
+
+    # LOGISEK ASCII Art (using raw string to avoid escape sequence warnings)
+    ascii_art = r"""
                                                                       
          _____   ______ _____ _______ _______ _     _
  |      |     | |  ____   |   |______ |______ |____/ 
@@ -2324,7 +3442,7 @@ def show_logisek_banner():
                                                                   
                                                                       
 """
-    
+
     # Print ASCII art in DarkMagenta
     try:
         from colorama import Fore, Style
@@ -2333,7 +3451,7 @@ def show_logisek_banner():
     except ImportError:
         # Fallback to regular print if colorama not available
         print(ascii_art)
-    
+
     print("  GNU General Public License v3.0")
     print("  https://logisek.com")
     print("  info@logisek.com")
@@ -2351,12 +3469,11 @@ if __name__ == "__main__":
             # Capture the banner output
             import io
             import contextlib
-            
-            
+
             banner_output = io.StringIO()
             with contextlib.redirect_stdout(banner_output):
                 show_logisek_banner()
-            
+
             help_text = super().format_help()
             return banner_output.getvalue() + help_text
 
@@ -2365,6 +3482,14 @@ if __name__ == "__main__":
         formatter_class=BannerHelpFormatter)
     parser.add_argument('--hours', type=int, default=24,
                         help='Hours to look back (default: 24)')
+    parser.add_argument('--date', type=str, dest='specific_date',
+                        help='Search for events from a specific date only (format: YYYY-MM-DD). Overrides --hours.')
+    parser.add_argument('--from-date', type=str, dest='from_date',
+                        help='Start date for date range search (format: YYYY-MM-DD). Use with --to-date. Overrides --hours and --date.')
+    parser.add_argument('--to-date', type=str, dest='to_date',
+                        help='End date for date range search (format: YYYY-MM-DD). Use with --from-date. Overrides --hours and --date.')
+    parser.add_argument('--exclude-date', action='append', dest='exclude_dates',
+                        help='Exclude events from specific date(s) (format: YYYY-MM-DD). Can be used multiple times.')
     parser.add_argument(
         '--format', choices=['json', 'jsonl', 'text', 'csv'], default='text', help='Output format')
     parser.add_argument('--categories', nargs='+',
@@ -2519,6 +3644,12 @@ if __name__ == "__main__":
                         help='Combine field filters with AND/OR (default AND)')
     parser.add_argument('--not', dest='negate', action='store_true',
                         help='Negate the combined field filter result (NOT)')
+    parser.add_argument('--compromised', action='store_true',
+                        help='Hunt for compromise indicators using compromise.json and calculate likelihood percentage')
+    parser.add_argument('--export-events', action='store_true',
+                        help='Export all discovered events to file (use with --compromised and -o output)')
+    parser.add_argument('--scoring-breakdown', action='store_true',
+                        help='Show detailed scoring breakdown for compromise likelihood calculation')
 
     args = parser.parse_args()
     # expose args globally for helper access
@@ -2548,18 +3679,21 @@ if __name__ == "__main__":
         resolved = preset_map.get(args.preset.lower())
         if resolved and os.path.exists(resolved):
             cfg = load_event_ids_from_json(resolved)
-            ok, err = validate_config_schema(cfg) if cfg else (False, 'Invalid/empty config')
+            ok, err = validate_config_schema(cfg) if cfg else (
+                False, 'Invalid/empty config')
             if ok:
                 EVENTS = cfg
                 loaded_paths.append(resolved)
             else:
-                print(f"Preset '{args.preset}' failed schema validation: {err}")
+                print(
+                    f"Preset '{args.preset}' failed schema validation: {err}")
         else:
             print(f"Preset '{args.preset}' not recognized or file not found.")
 
     if args.config and not EVENTS:
         cfg = load_event_ids_from_json(args.config)
-        ok, err = validate_config_schema(cfg) if cfg else (False, 'Invalid/empty config')
+        ok, err = validate_config_schema(cfg) if cfg else (
+            False, 'Invalid/empty config')
         if ok:
             EVENTS = cfg
             loaded_paths.append(args.config)
@@ -2570,7 +3704,8 @@ if __name__ == "__main__":
         merged = EVENTS or {}
         for path in args.configs:
             cfg = load_event_ids_from_json(path)
-            ok, err = validate_config_schema(cfg) if cfg else (False, 'Invalid/empty config')
+            ok, err = validate_config_schema(cfg) if cfg else (
+                False, 'Invalid/empty config')
             if ok:
                 merged, diff = merge_configs_with_diff(merged, cfg)
                 print_config_diff(diff, quiet=False)
@@ -2581,11 +3716,12 @@ if __name__ == "__main__":
 
     if not EVENTS:
         EVENTS = get_default_events()
-    
+
     # Calculate all unique Event IDs
     ALL_EVENT_IDS = sorted({eid for cat in EVENTS.values() for eid in cat})
-    
-    print(f"Loaded {len(ALL_EVENT_IDS)} unique Event IDs from {len(EVENTS)} categories")
+
+    print(
+        f"Loaded {len(ALL_EVENT_IDS)} unique Event IDs from {len(EVENTS)} categories")
 
     # Warn or elevate if not running with Administrator privileges (UAC-aware)
     try:
@@ -2606,30 +3742,43 @@ if __name__ == "__main__":
                 try:
                     script_path = os.path.abspath(__file__)
                     # Rebuild args excluding the --elevate flag to avoid recursion
-                    child_args = [script_path] + [a for a in sys.argv[1:] if a != '--elevate']
-                    params = ' '.join([f'"{a}"' if ' ' in a or a.startswith('-') else a for a in child_args])
-                    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+                    child_args = [script_path] + \
+                        [a for a in sys.argv[1:] if a != '--elevate']
+                    params = ' '.join(
+                        [f'"{a}"' if ' ' in a or a.startswith('-') else a for a in child_args])
+                    rc = ctypes.windll.shell32.ShellExecuteW(
+                        None, "runas", sys.executable, params, None, 1)
                     if rc <= 32:
-                        print("Failed to relaunch elevated. Please run this script from an elevated prompt.")
+                        print(
+                            "Failed to relaunch elevated. Please run this script from an elevated prompt.")
                         # If elevation failed, still show the warning unless suppressed
                         if not getattr(args, 'no-admin-warning', False):
-                            print("WARNING: Administrator privileges not detected. This script works best when run elevated.")
-                            print("Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
-                            print("Run from an elevated PowerShell or Command Prompt for full functionality.")
+                            print(
+                                "WARNING: Administrator privileges not detected. This script works best when run elevated.")
+                            print(
+                                "Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
+                            print(
+                                "Run from an elevated PowerShell or Command Prompt for full functionality.")
                     else:
                         # Successfully initiated elevation; exit current process
                         sys.exit(0)
                 except Exception:
                     # On failure, show warning unless suppressed
                     if not getattr(args, 'no-admin-warning', False):
-                        print("WARNING: Administrator privileges not detected. This script works best when run elevated.")
-                        print("Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
-                        print("Run from an elevated PowerShell or Command Prompt for full functionality.")
+                        print(
+                            "WARNING: Administrator privileges not detected. This script works best when run elevated.")
+                        print(
+                            "Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
+                        print(
+                            "Run from an elevated PowerShell or Command Prompt for full functionality.")
             else:
                 if not getattr(args, 'no-admin-warning', False):
-                    print("WARNING: Administrator privileges not detected. This script works best when run elevated.")
-                    print("Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
-                    print("Run from an elevated PowerShell or Command Prompt for full functionality.")
+                    print(
+                        "WARNING: Administrator privileges not detected. This script works best when run elevated.")
+                    print(
+                        "Some logs (e.g., 'Security') and configuration actions may be inaccessible without elevation.")
+                    print(
+                        "Run from an elevated PowerShell or Command Prompt for full functionality.")
     except Exception:
         pass
 
@@ -2644,7 +3793,8 @@ if __name__ == "__main__":
             try:
                 print("Checking Windows Event Log service (eventlog)...")
                 # Query runtime state
-                r = subprocess.run(['sc', 'query', 'eventlog'], capture_output=True, text=True)
+                r = subprocess.run(['sc', 'query', 'eventlog'],
+                                   capture_output=True, text=True)
                 state = 'Unknown'
                 if r.stdout:
                     for line in r.stdout.splitlines():
@@ -2652,7 +3802,8 @@ if __name__ == "__main__":
                             state = line.split(':', 1)[1].strip()
                             break
                 # Query configuration (start type)
-                r2 = subprocess.run(['sc', 'qc', 'eventlog'], capture_output=True, text=True)
+                r2 = subprocess.run(['sc', 'qc', 'eventlog'],
+                                    capture_output=True, text=True)
                 start_type = 'Unknown'
                 if r2.stdout:
                     for line in r2.stdout.splitlines():
@@ -2663,7 +3814,8 @@ if __name__ == "__main__":
                 print(f"  State:   {state}")
                 print(f"  Start:   {start_type}")
                 if 'RUNNING' not in state.upper():
-                    print("\nThe Event Log service is not running. You may start it with:")
+                    print(
+                        "\nThe Event Log service is not running. You may start it with:")
                     print("  sc start eventlog")
                 sys.exit(0)
             except Exception as e:
@@ -2690,7 +3842,7 @@ if __name__ == "__main__":
                         name = (entry.get('Name') or '').strip()
                         if name:
                             f.write(f'substring,{name.lower()}\n')
-                        
+
                         # Extract commands and their patterns
                         commands = entry.get('Commands', [])
                         for cmd in commands:
@@ -2704,7 +3856,7 @@ if __name__ == "__main__":
                                     # Look for suspicious patterns
                                     if any(pattern in part.lower() for pattern in ['-enc', 'downloadstring', 'iex', 'bypass', 'amsi']):
                                         f.write(f'substring,{part.lower()}\n')
-                        
+
                         # Extract full paths
                         full_paths = entry.get('Full_Path', [])
                         for path_entry in full_paths:
@@ -2713,7 +3865,7 @@ if __name__ == "__main__":
                                 exe_name = os.path.basename(path)
                                 if exe_name:
                                     f.write(f'substring,{exe_name.lower()}\n')
-                
+
                 print(f"Wrote LOLBAS IOCs: {out_path}")
                 sys.exit(0)
             except Exception as e:
@@ -2730,6 +3882,53 @@ if __name__ == "__main__":
         searcher = WindowsEventLogSearcher()
         searcher.show_current_retention_settings()
         sys.exit(0)
+
+    # Handle compromised hunting
+    if args.compromised:
+        try:
+            # Hunt for compromise indicators
+            # Only use hours_back if no specific date or date range is provided
+            hours_back = args.hours
+            if getattr(args, 'specific_date', None) or getattr(args, 'from_date', None):
+                hours_back = 24  # Default fallback, will be overridden by date parameters
+            
+            results, config = hunt_compromise_indicators(
+                hours_back=hours_back, 
+                specific_date=getattr(args, 'specific_date', None),
+                from_date=getattr(args, 'from_date', None),
+                to_date=getattr(args, 'to_date', None)
+            )
+            
+            if results is None:
+                print("Failed to load compromise configuration")
+                sys.exit(1)
+            
+            # Analyze event chains
+            detected_chains = analyze_event_chains(results, config)
+            
+            # Calculate compromise likelihood
+            likelihood = calculate_compromise_likelihood(results, detected_chains, config)
+            
+            # Determine output file for event export
+            output_file = getattr(args, 'output', None)
+            export_events = getattr(args, 'export_events', False)
+            
+            # Print analysis
+            print_compromise_analysis(results, detected_chains, likelihood, config, export_events, output_file)
+            
+            # Show scoring breakdown if requested
+            if getattr(args, 'scoring_breakdown', False):
+                print_scoring_breakdown(results, detected_chains, config, likelihood)
+            
+            # Exit with appropriate code based on likelihood
+            if likelihood >= 50:
+                sys.exit(1)  # High/medium risk
+            else:
+                sys.exit(0)  # Low risk
+                
+        except Exception as e:
+            print(f"Error during compromise hunting: {e}")
+            sys.exit(1)
 
     if args.open_both:
         searcher = WindowsEventLogSearcher()
@@ -2807,7 +4006,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Error reading hosts file '{args.hosts_file}': {e}")
                 sys.exit(1)
-        
+
         # Determine which level filter to use
         if args.levels_all:
             level_filter = set(args.levels_all)
@@ -2815,7 +4014,7 @@ if __name__ == "__main__":
         else:
             level_filter = args.level_all if args.level_all else args.level
             level_all = bool(args.level_all)
-        
+
         def run_search(quiet=False):
             if remote_hosts:
                 # Remote search
@@ -2826,13 +4025,14 @@ if __name__ == "__main__":
                     username=args.username,
                     password=args.password,
                     domain=args.domain,
-                    auth_method=args.auth_method
+                    auth_method=args.auth_method,
+                    exclude_dates=getattr(args, 'exclude_dates', None)
                 )
                 # attach SSH extras if present
                 if args.auth_method == 'ssh':
                     searcher.ssh_key = args.ssh_key
                     searcher.ssh_port = args.ssh_port
-                
+
                 # Get event IDs to search
                 if args.event_ids:
                     event_ids = args.event_ids
@@ -2843,7 +4043,7 @@ if __name__ == "__main__":
                             event_ids.extend(EVENTS[category])
                 else:
                     event_ids = list(ALL_EVENT_IDS) if ALL_EVENT_IDS else []
-                
+
                 results = searcher.search_remote_hosts(
                     event_ids=event_ids,
                     hours_back=args.hours,
@@ -2870,10 +4070,11 @@ if __name__ == "__main__":
                     allowlist=args.allowlist,
                     suppress_rules=args.suppress
                 )
-                
+
                 # Enforce strict remote behavior
                 if args.strict_remote and not results:
-                    print("Remote collection returned no results or failed. --strict-remote is set; exiting with error.")
+                    print(
+                        "Remote collection returned no results or failed. --strict-remote is set; exiting with error.")
                     sys.exit(2)
                 # Prepare output flags and output results
                 searcher.matrix_format = args.matrix
@@ -2891,10 +4092,13 @@ if __name__ == "__main__":
                     log_filter=args.log_filter,
                     source_filter=args.source_filter,
                     description_filter=args.description_filter,
-                    quiet=quiet
+                    quiet=quiet,
+                    specific_date=getattr(args, 'specific_date', None),
+                    from_date=getattr(args, 'from_date', None),
+                    to_date=getattr(args, 'to_date', None)
                 )
 
-        if args.output:
+        if args.output and not args.compromised:
             # Inform about matrix/text expectations
             if args.matrix and args.format != 'text':
                 print("Note: For --matrix output, --format is treated as text.")
@@ -2915,7 +4119,8 @@ if __name__ == "__main__":
                 # results already in searcher.results via global flow; construct a lightweight sender
                 sender = WindowsEventLogSearcher()
                 sender.results = searcher.results if 'searcher' in locals() else []
-                sender.send_sinks(webhook_url=getattr(args, 'webhook', None), hec_url=getattr(args, 'hec_url', None), hec_token=getattr(args, 'hec_token', None), batch_size=getattr(args, 'sink_batch', 500), use_jsonl=(args.format == 'jsonl'))
+                sender.send_sinks(webhook_url=getattr(args, 'webhook', None), hec_url=getattr(args, 'hec_url', None), hec_token=getattr(
+                    args, 'hec_token', None), batch_size=getattr(args, 'sink_batch', 500), use_jsonl=(args.format == 'jsonl'))
     except KeyboardInterrupt:
         print("\nSearch interrupted by user.")
     except Exception as e:
